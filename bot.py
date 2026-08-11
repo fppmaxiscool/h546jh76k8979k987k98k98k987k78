@@ -7,7 +7,6 @@ import time
 from collections import defaultdict, deque
 from typing import Union
 
-import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -33,24 +32,6 @@ if not TOKEN:
     raise SystemExit("DISCORD_TOKEN environment variable is not set and no .env file found. See .env.example")
 
 OWNER_ID = 847669208296063016
-
-AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
-DEFAULT_AI_MODELS = [
-    "google/gemma-4-31b-it:free",
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "openai/gpt-oss-20b:free",
-    "google/gemma-4-26b-a4b-it:free",
-    "cohere/north-mini-code:free",
-]
-AI_MODELS_FROM_ENV = bool(os.getenv("AI_MODELS"))
-AI_MODELS = [m.strip() for m in os.getenv("AI_MODELS", ",".join(DEFAULT_AI_MODELS)).split(",") if m.strip()]
-AI_MODEL_INDEX = 0
-AI_EXCLUDE = ("content-safety", "clip", "lyria", "embed", "rerank", "whisper", "tts", "image", "safety")
-AI_ENABLED = bool(AI_API_KEY)
-AI_CHANNEL_ID = None
-AI_MEMORY = {}
-USER_MODELS = {}
-FAILED_MODELS = {}
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -175,13 +156,6 @@ def is_whitelisted(member):
     return any(r.id in WHITELIST_ROLE_IDS for r in member.roles)
 
 
-def fit(text, limit=1900):
-    text = text.strip()
-    if len(text) <= limit:
-        return text
-    return text[:limit].rstrip() + "..."
-
-
 def save_config():
     data = {
         "channel_raid_protection": channel_raid_protection,
@@ -197,7 +171,6 @@ def save_config():
         "whitelist_roles": sorted(WHITELIST_ROLE_IDS),
         "room_inactive_days": ROOM_INACTIVE_DAYS,
         "audit_channel_id": audit_channel_id,
-        "ai_channel_id": AI_CHANNEL_ID,
     }
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
@@ -206,7 +179,7 @@ def save_config():
 def load_config():
     global channel_raid_protection, spam_detection, invite_filter, antibot, badwords_filter, antilink
     global WELCOME_ROLE_ID, AUTO_RESPONSES, LINK_WHITELIST, WHITELIST_USER_IDS, WHITELIST_ROLE_IDS
-    global ROOM_INACTIVE_DAYS, audit_channel_id, AI_CHANNEL_ID
+    global ROOM_INACTIVE_DAYS, audit_channel_id
     if not os.path.exists(CONFIG_FILE):
         return False
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -224,7 +197,6 @@ def load_config():
     WHITELIST_ROLE_IDS = set(data.get("whitelist_roles", []))
     ROOM_INACTIVE_DAYS = data.get("room_inactive_days", 14)
     audit_channel_id = data.get("audit_channel_id")
-    AI_CHANNEL_ID = data.get("ai_channel_id")
     return True
 
 
@@ -575,91 +547,6 @@ class CloseTicketView(discord.ui.View):
         await channel.send(f":lock: Ticket closed by {interaction.user.mention}. Openers can no longer reply.")
 
 
-SYSTEM_PROMPT = "You are a helpful assistant in a Discord server. Be concise, friendly, and use plain text. Keep replies reasonably short."
-
-
-async def ai_generate(prompt, channel_id, user_id=None):
-    global AI_MODEL_INDEX
-    history = AI_MEMORY.get(channel_id, deque(maxlen=10))
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages += [{"role": r, "content": t} for r, t in history]
-    messages.append({"role": "user", "content": prompt})
-
-    pref = USER_MODELS.get(user_id) if user_id else None
-    rotation = [AI_MODELS[(AI_MODEL_INDEX + i) % len(AI_MODELS)] for i in range(len(AI_MODELS))]
-    if pref and pref in AI_MODELS:
-        rotation = [pref] + [m for m in rotation if m != pref]
-
-    now = time.time()
-    errors = []
-    for model in rotation:
-        if model in FAILED_MODELS and now < FAILED_MODELS[model]:
-            continue
-        payload = {"model": model, "messages": messages}
-        headers = {"Authorization": f"Bearer {AI_API_KEY}"}
-        try:
-            async with bot.ai_session.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=45),
-            ) as resp:
-                data = await resp.json()
-                if resp.status != 200:
-                    msg = data.get("error", {}).get("message", f"HTTP {resp.status}")
-                    errors.append(f"{model}: {msg[:80]}")
-                    if resp.status == 429:
-                        FAILED_MODELS[model] = now + 600
-                    elif resp.status >= 500:
-                        FAILED_MODELS[model] = now + 120
-                    continue
-                text = data["choices"][0]["message"]["content"]
-        except Exception as e:
-            errors.append(f"{model}: {str(e)[:80]}")
-            FAILED_MODELS[model] = now + 120
-            continue
-        AI_MODEL_INDEX = (AI_MODELS.index(model) + 1) % len(AI_MODELS)
-        AI_MEMORY[channel_id] = deque(list(history) + [("user", prompt), ("assistant", text)], maxlen=10)
-        return text, None
-    return None, "; ".join(errors)
-
-
-async def refresh_free_models():
-    global AI_MODELS
-    try:
-        async with bot.ai_session.get(
-            "https://openrouter.ai/api/v1/models", timeout=aiohttp.ClientTimeout(total=20)
-        ) as resp:
-            if resp.status != 200:
-                return False
-            data = await resp.json()
-        models = sorted(
-            m["id"]
-            for m in data.get("data", [])
-            if m.get("pricing", {}).get("prompt") == "0"
-            and m.get("pricing", {}).get("completion") == "0"
-            and m["id"].endswith(":free")
-            and not any(bad in m["id"].lower() for bad in AI_EXCLUDE)
-        )
-        if not models:
-            return False
-        AI_MODELS = models
-        return True
-    except Exception:
-        return False
-
-
-async def model_refresh_loop():
-    await bot.wait_until_ready()
-    while not bot.is_closed():
-        await asyncio.sleep(24 * 3600)
-        try:
-            if await refresh_free_models():
-                print(f"Refreshed free AI model list: {len(AI_MODELS)} models")
-        except Exception as e:
-            print(e)
-
-
 async def room_cleanup_loop():
     await bot.wait_until_ready()
     while not bot.is_closed():
@@ -672,13 +559,6 @@ async def room_cleanup_loop():
 
 @bot.event
 async def on_ready():
-    bot.ai_session = aiohttp.ClientSession()
-    if not AI_MODELS_FROM_ENV:
-        try:
-            if await refresh_free_models():
-                print(f"Loaded {len(AI_MODELS)} free AI models")
-        except Exception as e:
-            print(e)
     if load_config():
         print("Loaded config from bot-config.json")
     for gid in (1536762391851696199, 1521614024587083908):
@@ -688,15 +568,7 @@ async def on_ready():
     bot.tree.clear_commands(guild=None)
     await bot.tree.sync()
     bot.loop.create_task(room_cleanup_loop())
-    bot.loop.create_task(model_refresh_loop())
     print(f"Logged in as {bot.user} ({bot.user.id}) - slash commands synced")
-
-
-@bot.event
-async def on_close():
-    session = getattr(bot, "ai_session", None)
-    if session is not None:
-        await session.close()
 
 
 @bot.event
@@ -813,14 +685,6 @@ async def on_message(message):
         if trigger in content.lower():
             await message.channel.send(response)
             break
-
-    if AI_ENABLED and AI_CHANNEL_ID and message.channel.id == AI_CHANNEL_ID:
-        async with message.channel.typing():
-            text, err = await ai_generate(content, message.channel.id, message.author.id)
-        if err:
-            await message.channel.send(f":warning: AI error: {fit(err, 300)}")
-        else:
-            await message.channel.send(fit(text))
 
 
 @bot.tree.command(name="room", description="Create a private channel only for specific people")
@@ -1381,65 +1245,6 @@ async def ticketpanel(interaction: discord.Interaction):
     msg = await channel.send("\U0001f3ab **Need help?** Click the button below to open a ticket.", view=TicketView())
     cfg["panel_message_id"] = msg.id
     await interaction.response.send_message(f"Panel reposted in {channel.mention}.", ephemeral=True)
-
-
-@bot.tree.command(name="ai", description="Ask the AI assistant")
-@app_commands.describe(message="Your question or prompt")
-async def ai(interaction: discord.Interaction, message: str):
-    if not AI_ENABLED:
-        await interaction.response.send_message("AI isn't enabled. Ask an admin to set the AI_API_KEY variable.", ephemeral=True)
-        return
-    await interaction.response.defer()
-    text, err = await ai_generate(message, interaction.channel_id, interaction.user.id)
-    if err:
-        await interaction.followup.send(f":warning: AI error: {fit(err, 300)}")
-    else:
-        await interaction.followup.send(fit(text))
-
-
-@bot.tree.command(name="switchmodel", description="Switch which AI model YOU use (auto = follow the rotation)")
-@app_commands.describe(model="Model to use, or 'auto'")
-async def switchmodel(interaction: discord.Interaction, model: str):
-    if model.lower() == "auto":
-        USER_MODELS.pop(interaction.user.id, None)
-        await interaction.response.send_message("Using the automatic rotation again.", ephemeral=True)
-        return
-    if model not in AI_MODELS:
-        await interaction.response.send_message(
-            f"Unknown model. Pick one with the suggestions, or type `auto`.",
-            ephemeral=True,
-        )
-        return
-    USER_MODELS[interaction.user.id] = model
-    await interaction.response.send_message(f"Your AI model is now `{model}`.", ephemeral=True)
-
-
-@switchmodel.autocomplete("model")
-async def switchmodel_autocomplete(interaction: discord.Interaction, current: str):
-    choices = [m for m in AI_MODELS if current.lower() in m.lower()][:25]
-    return [app_commands.Choice(name=m, value=m) for m in choices]
-
-
-@bot.tree.command(name="aimodels", description="Show the AI model rotation list")
-async def aimodels(interaction: discord.Interaction):
-    lines = "\n".join(f"{'->' if i == AI_MODEL_INDEX else '  '} `{m}`" for i, m in enumerate(AI_MODELS))
-    await interaction.response.send_message(f"**AI model rotation:**\n{lines}", ephemeral=True)
-
-
-@bot.tree.command(name="aichat", description="Make the AI reply to every message in a channel (run with no channel = off)")
-@app_commands.describe(channel="Channel for AI chat")
-@is_trusted()
-async def aichat(interaction: discord.Interaction, channel: discord.TextChannel = None):
-    global AI_CHANNEL_ID
-    if channel is None:
-        AI_CHANNEL_ID = None
-        await interaction.response.send_message("AI chat mode **OFF**.", ephemeral=True)
-        return
-    if not AI_ENABLED:
-        await interaction.response.send_message("AI isn't enabled. Set the AI_API_KEY variable first.", ephemeral=True)
-        return
-    AI_CHANNEL_ID = channel.id
-    await interaction.response.send_message(f"AI chat enabled in {channel.mention} - it will reply to every message there.", ephemeral=True)
 
 
 @bot.tree.command(name="auditlog", description="Set which channel receives the bot's audit log")
