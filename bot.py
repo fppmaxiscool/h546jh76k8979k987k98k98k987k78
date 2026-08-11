@@ -34,8 +34,16 @@ if not TOKEN:
 
 OWNER_ID = 847669208296063016
 
-AI_MODEL = os.getenv("AI_MODEL", "gemini-2.5-flash").strip()
 AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
+DEFAULT_AI_MODELS = [
+    "google/gemini-2.5-flash:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "mistralai/mistral-small-3.1-24b-instruct:free",
+    "qwen/qwen3-32b:free",
+    "deepseek/deepseek-chat-v3-0324:free",
+]
+AI_MODELS = [m.strip() for m in os.getenv("AI_MODELS", ",".join(DEFAULT_AI_MODELS)).split(",") if m.strip()]
+AI_MODEL_INDEX = 0
 AI_ENABLED = bool(AI_API_KEY)
 AI_CHANNEL_ID = None
 AI_MEMORY = {}
@@ -564,28 +572,40 @@ class CloseTicketView(discord.ui.View):
         await channel.send(f":lock: Ticket closed by {interaction.user.mention}. Openers can no longer reply.")
 
 
-async def gemini_generate(prompt, channel_id):
+SYSTEM_PROMPT = "You are a helpful assistant in a Discord server. Be concise, friendly, and use plain text. Keep replies reasonably short."
+
+
+async def ai_generate(prompt, channel_id):
+    global AI_MODEL_INDEX
     history = AI_MEMORY.get(channel_id, deque(maxlen=10))
-    contents = [{"role": r, "parts": [{"text": t}]} for r, t in history]
-    contents.append({"role": "user", "parts": [{"text": prompt}]})
-    payload = {
-        "system_instruction": {"parts": [{"text": "You are a helpful assistant in a Discord server. Be concise, friendly, and use plain text. Keep replies reasonably short."}]},
-        "contents": contents,
-    }
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{AI_MODEL}:generateContent?key={AI_API_KEY}"
-    try:
-        async with bot.ai_session.post(
-            url, json=payload, timeout=aiohttp.ClientTimeout(total=30)
-        ) as resp:
-            data = await resp.json()
-            if resp.status != 200:
-                msg = data.get("error", {}).get("message", f"HTTP {resp.status}")
-                return None, msg
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception as e:
-        return None, str(e)
-    AI_MEMORY[channel_id] = deque(list(history) + [("user", prompt), ("model", text)], maxlen=10)
-    return text, None
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages += [{"role": r, "content": t} for r, t in history]
+    messages.append({"role": "user", "content": prompt})
+    errors = []
+    for i in range(len(AI_MODELS)):
+        model = AI_MODELS[(AI_MODEL_INDEX + i) % len(AI_MODELS)]
+        payload = {"model": model, "messages": messages}
+        headers = {"Authorization": f"Bearer {AI_API_KEY}"}
+        try:
+            async with bot.ai_session.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=45),
+            ) as resp:
+                data = await resp.json()
+                if resp.status != 200:
+                    msg = data.get("error", {}).get("message", f"HTTP {resp.status}")
+                    errors.append(f"{model}: {msg[:80]}")
+                    continue
+                text = data["choices"][0]["message"]["content"]
+        except Exception as e:
+            errors.append(f"{model}: {str(e)[:80]}")
+            continue
+        AI_MODEL_INDEX = (AI_MODEL_INDEX + i + 1) % len(AI_MODELS)
+        AI_MEMORY[channel_id] = deque(list(history) + [("user", prompt), ("assistant", text)], maxlen=10)
+        return text, None
+    return None, "; ".join(errors)
 
 
 async def room_cleanup_loop():
@@ -737,7 +757,7 @@ async def on_message(message):
 
     if AI_ENABLED and AI_CHANNEL_ID and message.channel.id == AI_CHANNEL_ID:
         async with message.channel.typing():
-            text, err = await gemini_generate(content, message.channel.id)
+            text, err = await ai_generate(content, message.channel.id)
         if err:
             await message.channel.send(f":warning: AI error: {fit(err, 300)}")
         else:
@@ -1306,11 +1326,18 @@ async def ai(interaction: discord.Interaction, message: str):
         await interaction.response.send_message("AI isn't enabled. Ask an admin to set the AI_API_KEY variable.", ephemeral=True)
         return
     await interaction.response.defer()
-    text, err = await gemini_generate(message, interaction.channel_id)
+    text, err = await ai_generate(message, interaction.channel_id)
     if err:
         await interaction.followup.send(f":warning: AI error: {fit(err, 300)}")
     else:
         await interaction.followup.send(fit(text))
+
+
+@bot.tree.command(name="aimodels", description="Show the AI model rotation list")
+@is_trusted()
+async def aimodels(interaction: discord.Interaction):
+    lines = "\n".join(f"{'->' if i == AI_MODEL_INDEX else '  '} `{m}`" for i, m in enumerate(AI_MODELS))
+    await interaction.response.send_message(f"**AI model rotation:**\n{lines}", ephemeral=True)
 
 
 @bot.tree.command(name="aichat", description="Make the AI reply to every message in a channel (run with no channel = off)")
