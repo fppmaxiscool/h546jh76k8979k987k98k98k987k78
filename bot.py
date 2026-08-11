@@ -36,11 +36,11 @@ OWNER_ID = 847669208296063016
 
 AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
 DEFAULT_AI_MODELS = [
-    "google/gemini-2.5-flash:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "mistralai/mistral-small-3.1-24b-instruct:free",
-    "qwen/qwen3-32b:free",
-    "deepseek/deepseek-chat-v3-0324:free",
+    "google/gemma-4-31b-it:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "openai/gpt-oss-20b:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "cohere/north-mini-code:free",
 ]
 AI_MODELS = [m.strip() for m in os.getenv("AI_MODELS", ",".join(DEFAULT_AI_MODELS)).split(",") if m.strip()]
 AI_MODEL_INDEX = 0
