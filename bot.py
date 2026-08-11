@@ -7,6 +7,7 @@ import time
 from collections import defaultdict, deque
 from typing import Union
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -32,6 +33,12 @@ if not TOKEN:
     raise SystemExit("DISCORD_TOKEN environment variable is not set and no .env file found. See .env.example")
 
 OWNER_ID = 847669208296063016
+
+AI_MODEL = os.getenv("AI_MODEL", "gemini-2.5-flash").strip()
+AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
+AI_ENABLED = bool(AI_API_KEY)
+AI_CHANNEL_ID = None
+AI_MEMORY = {}
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -157,6 +164,13 @@ def is_whitelisted(member):
     return any(r.id in WHITELIST_ROLE_IDS for r in member.roles)
 
 
+def fit(text, limit=1900):
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
 def save_config():
     data = {
         "channel_raid_protection": channel_raid_protection,
@@ -172,6 +186,7 @@ def save_config():
         "whitelist_roles": sorted(WHITELIST_ROLE_IDS),
         "room_inactive_days": ROOM_INACTIVE_DAYS,
         "audit_channel_id": audit_channel_id,
+        "ai_channel_id": AI_CHANNEL_ID,
     }
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
@@ -180,7 +195,7 @@ def save_config():
 def load_config():
     global channel_raid_protection, spam_detection, invite_filter, antibot, badwords_filter, antilink
     global WELCOME_ROLE_ID, AUTO_RESPONSES, LINK_WHITELIST, WHITELIST_USER_IDS, WHITELIST_ROLE_IDS
-    global ROOM_INACTIVE_DAYS, audit_channel_id
+    global ROOM_INACTIVE_DAYS, audit_channel_id, AI_CHANNEL_ID
     if not os.path.exists(CONFIG_FILE):
         return False
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -198,6 +213,7 @@ def load_config():
     WHITELIST_ROLE_IDS = set(data.get("whitelist_roles", []))
     ROOM_INACTIVE_DAYS = data.get("room_inactive_days", 14)
     audit_channel_id = data.get("audit_channel_id")
+    AI_CHANNEL_ID = data.get("ai_channel_id")
     return True
 
 
@@ -548,6 +564,30 @@ class CloseTicketView(discord.ui.View):
         await channel.send(f":lock: Ticket closed by {interaction.user.mention}. Openers can no longer reply.")
 
 
+async def gemini_generate(prompt, channel_id):
+    history = AI_MEMORY.get(channel_id, deque(maxlen=10))
+    contents = [{"role": r, "parts": [{"text": t}]} for r, t in history]
+    contents.append({"role": "user", "parts": [{"text": prompt}]})
+    payload = {
+        "system_instruction": {"parts": [{"text": "You are a helpful assistant in a Discord server. Be concise, friendly, and use plain text. Keep replies reasonably short."}]},
+        "contents": contents,
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{AI_MODEL}:generateContent?key={AI_API_KEY}"
+    try:
+        async with bot.ai_session.post(
+            url, json=payload, timeout=aiohttp.ClientTimeout(total=30)
+        ) as resp:
+            data = await resp.json()
+            if resp.status != 200:
+                msg = data.get("error", {}).get("message", f"HTTP {resp.status}")
+                return None, msg
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception as e:
+        return None, str(e)
+    AI_MEMORY[channel_id] = deque(list(history) + [("user", prompt), ("model", text)], maxlen=10)
+    return text, None
+
+
 async def room_cleanup_loop():
     await bot.wait_until_ready()
     while not bot.is_closed():
@@ -560,6 +600,7 @@ async def room_cleanup_loop():
 
 @bot.event
 async def on_ready():
+    bot.ai_session = aiohttp.ClientSession()
     if load_config():
         print("Loaded config from bot-config.json")
     for gid in (1536762391851696199, 1521614024587083908):
@@ -570,6 +611,13 @@ async def on_ready():
     await bot.tree.sync()
     bot.loop.create_task(room_cleanup_loop())
     print(f"Logged in as {bot.user} ({bot.user.id}) - slash commands synced")
+
+
+@bot.event
+async def on_close():
+    session = getattr(bot, "ai_session", None)
+    if session is not None:
+        await session.close()
 
 
 @bot.event
@@ -686,6 +734,14 @@ async def on_message(message):
         if trigger in content.lower():
             await message.channel.send(response)
             break
+
+    if AI_ENABLED and AI_CHANNEL_ID and message.channel.id == AI_CHANNEL_ID:
+        async with message.channel.typing():
+            text, err = await gemini_generate(content, message.channel.id)
+        if err:
+            await message.channel.send(f":warning: AI error: {fit(err, 300)}")
+        else:
+            await message.channel.send(fit(text))
 
 
 @bot.tree.command(name="room", description="Create a private channel only for specific people")
@@ -1241,6 +1297,36 @@ async def ticketpanel(interaction: discord.Interaction):
     msg = await channel.send("\U0001f3ab **Need help?** Click the button below to open a ticket.", view=TicketView())
     cfg["panel_message_id"] = msg.id
     await interaction.response.send_message(f"Panel reposted in {channel.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="ai", description="Ask the AI assistant")
+@app_commands.describe(message="Your question or prompt")
+async def ai(interaction: discord.Interaction, message: str):
+    if not AI_ENABLED:
+        await interaction.response.send_message("AI isn't enabled. Ask an admin to set the AI_API_KEY variable.", ephemeral=True)
+        return
+    await interaction.response.defer()
+    text, err = await gemini_generate(message, interaction.channel_id)
+    if err:
+        await interaction.followup.send(f":warning: AI error: {fit(err, 300)}")
+    else:
+        await interaction.followup.send(fit(text))
+
+
+@bot.tree.command(name="aichat", description="Make the AI reply to every message in a channel (run with no channel = off)")
+@app_commands.describe(channel="Channel for AI chat")
+@is_trusted()
+async def aichat(interaction: discord.Interaction, channel: discord.TextChannel = None):
+    global AI_CHANNEL_ID
+    if channel is None:
+        AI_CHANNEL_ID = None
+        await interaction.response.send_message("AI chat mode **OFF**.", ephemeral=True)
+        return
+    if not AI_ENABLED:
+        await interaction.response.send_message("AI isn't enabled. Set the AI_API_KEY variable first.", ephemeral=True)
+        return
+    AI_CHANNEL_ID = channel.id
+    await interaction.response.send_message(f"AI chat enabled in {channel.mention} - it will reply to every message there.", ephemeral=True)
 
 
 @bot.tree.command(name="auditlog", description="Set which channel receives the bot's audit log")
