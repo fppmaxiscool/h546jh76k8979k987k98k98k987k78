@@ -158,7 +158,6 @@ def is_trusted():
     async def predicate(interaction: discord.Interaction):
         return (
             interaction.user.id == OWNER_ID
-            or interaction.user.guild_permissions.administrator
             or interaction.user.id in WHITELIST_USER_IDS
             or any(r.id in WHITELIST_ROLE_IDS for r in interaction.user.roles)
         )
