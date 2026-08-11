@@ -506,7 +506,7 @@ class TicketView(discord.ui.View):
             f"Ticket opened by {interaction.user.mention}. Support will help you shortly.",
             view=CloseTicketView(),
         )
-        await interaction.followup.send(f"Ticket opened: {channel.mention}")
+        await interaction.followup.send(f"Ticket opened: {channel.name}", ephemeral=True)
 
 
 class CloseTicketView(discord.ui.View):
