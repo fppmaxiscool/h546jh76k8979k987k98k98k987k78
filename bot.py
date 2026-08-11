@@ -42,8 +42,10 @@ DEFAULT_AI_MODELS = [
     "google/gemma-4-26b-a4b-it:free",
     "cohere/north-mini-code:free",
 ]
+AI_MODELS_FROM_ENV = bool(os.getenv("AI_MODELS"))
 AI_MODELS = [m.strip() for m in os.getenv("AI_MODELS", ",".join(DEFAULT_AI_MODELS)).split(",") if m.strip()]
 AI_MODEL_INDEX = 0
+AI_EXCLUDE = ("content-safety", "clip", "lyria", "embed", "rerank", "whisper", "tts", "image", "safety")
 AI_ENABLED = bool(AI_API_KEY)
 AI_CHANNEL_ID = None
 AI_MEMORY = {}
@@ -608,6 +610,42 @@ async def ai_generate(prompt, channel_id):
     return None, "; ".join(errors)
 
 
+async def refresh_free_models():
+    global AI_MODELS
+    try:
+        async with bot.ai_session.get(
+            "https://openrouter.ai/api/v1/models", timeout=aiohttp.ClientTimeout(total=20)
+        ) as resp:
+            if resp.status != 200:
+                return False
+            data = await resp.json()
+        models = sorted(
+            m["id"]
+            for m in data.get("data", [])
+            if m.get("pricing", {}).get("prompt") == "0"
+            and m.get("pricing", {}).get("completion") == "0"
+            and m["id"].endswith(":free")
+            and not any(bad in m["id"].lower() for bad in AI_EXCLUDE)
+        )
+        if not models:
+            return False
+        AI_MODELS = models
+        return True
+    except Exception:
+        return False
+
+
+async def model_refresh_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(24 * 3600)
+        try:
+            if await refresh_free_models():
+                print(f"Refreshed free AI model list: {len(AI_MODELS)} models")
+        except Exception as e:
+            print(e)
+
+
 async def room_cleanup_loop():
     await bot.wait_until_ready()
     while not bot.is_closed():
@@ -621,6 +659,12 @@ async def room_cleanup_loop():
 @bot.event
 async def on_ready():
     bot.ai_session = aiohttp.ClientSession()
+    if not AI_MODELS_FROM_ENV:
+        try:
+            if await refresh_free_models():
+                print(f"Loaded {len(AI_MODELS)} free AI models")
+        except Exception as e:
+            print(e)
     if load_config():
         print("Loaded config from bot-config.json")
     for gid in (1536762391851696199, 1521614024587083908):
@@ -630,6 +674,7 @@ async def on_ready():
     bot.tree.clear_commands(guild=None)
     await bot.tree.sync()
     bot.loop.create_task(room_cleanup_loop())
+    bot.loop.create_task(model_refresh_loop())
     print(f"Logged in as {bot.user} ({bot.user.id}) - slash commands synced")
 
 
