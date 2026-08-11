@@ -137,9 +137,14 @@ antilink = True
 audit_channel_id = None
 
 
-def is_owner_or_admin():
+def is_trusted():
     async def predicate(interaction: discord.Interaction):
-        return interaction.user.id == OWNER_ID or interaction.user.guild_permissions.administrator
+        return (
+            interaction.user.id == OWNER_ID
+            or interaction.user.guild_permissions.administrator
+            or interaction.user.id in WHITELIST_USER_IDS
+            or any(r.id in WHITELIST_ROLE_IDS for r in interaction.user.roles)
+        )
 
     return app_commands.check(predicate)
 
@@ -502,6 +507,7 @@ class TicketView(discord.ui.View):
         support_role = guild.get_role(cfg.get("support_role_id"))
         if support_role is not None:
             await channel.set_permissions(support_role, **TICKET_MEMBER_PERMS, reason="Ticket support")
+            await channel.send(f"{support_role.mention} {interaction.user.mention} opened a ticket and needs support.")
         await channel.send(
             f"Ticket opened by {interaction.user.mention}. Support will help you shortly.",
             view=CloseTicketView(),
@@ -690,7 +696,7 @@ async def on_message(message):
     role="Optional role that can only WATCH (view, read history, invites, reactions)",
     category="Optional category to create the channel in",
 )
-@is_owner_or_admin()
+@is_trusted()
 async def room(interaction: discord.Interaction, member: discord.Member, member2: discord.Member = None, member3: discord.Member = None, role: discord.Role = None, category: discord.CategoryChannel = None):
     members = [m for m in (member, member2, member3) if m is not None]
     if not interaction.guild.me.guild_permissions.manage_channels:
@@ -714,7 +720,7 @@ async def room(interaction: discord.Interaction, member: discord.Member, member2
     role="Optional role that can only WATCH (view, read history, invites, reactions)",
     category="Optional category to create the channel in",
 )
-@is_owner_or_admin()
+@is_trusted()
 async def marketplacecreate(interaction: discord.Interaction, member: discord.Member, member2: discord.Member = None, member3: discord.Member = None, role: discord.Role = None, category: discord.CategoryChannel = None):
     members = [m for m in (member, member2, member3) if m is not None]
     if not interaction.guild.me.guild_permissions.manage_channels:
@@ -786,7 +792,7 @@ async def roomlist(interaction: discord.Interaction, channel: discord.TextChanne
 
 @bot.tree.command(name="watcheradd", description="Give a role watch-only access to a channel")
 @app_commands.describe(role="Role to give watch-only access", channel="Channel (defaults to current channel)")
-@is_owner_or_admin()
+@is_trusted()
 async def watcheradd(interaction: discord.Interaction, role: discord.Role, channel: discord.TextChannel = None):
     channel = channel or interaction.channel
     await channel.set_permissions(role, **WATCHER_PERMS, reason="Watcher role")
@@ -795,7 +801,7 @@ async def watcheradd(interaction: discord.Interaction, role: discord.Role, chann
 
 @bot.tree.command(name="watcherremove", description="Remove watch-only access from a role")
 @app_commands.describe(role="Role to remove", channel="Channel (defaults to current channel)")
-@is_owner_or_admin()
+@is_trusted()
 async def watcherremove(interaction: discord.Interaction, role: discord.Role, channel: discord.TextChannel = None):
     channel = channel or interaction.channel
     await channel.set_permissions(role, overwrite=None, reason="Watcher role removed")
@@ -804,7 +810,7 @@ async def watcherremove(interaction: discord.Interaction, role: discord.Role, ch
 
 @bot.tree.command(name="ban", description="Ban a member")
 @app_commands.describe(member="User to ban", reason="Ban reason")
-@is_owner_or_admin()
+@is_trusted()
 async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = None):
     if not interaction.guild.me.guild_permissions.ban_members:
         await interaction.response.send_message("I need the **Ban Members** permission for this.", ephemeral=True)
@@ -816,7 +822,7 @@ async def ban(interaction: discord.Interaction, member: discord.Member, reason: 
 
 @bot.tree.command(name="unban", description="Unban a user by ID")
 @app_commands.describe(user_id="The user ID to unban", reason="Reason")
-@is_owner_or_admin()
+@is_trusted()
 async def unban(interaction: discord.Interaction, user_id: str, reason: str = None):
     if not interaction.guild.me.guild_permissions.ban_members:
         await interaction.response.send_message("I need the **Ban Members** permission for this.", ephemeral=True)
@@ -836,7 +842,7 @@ async def unban(interaction: discord.Interaction, user_id: str, reason: str = No
 
 @bot.tree.command(name="kick", description="Kick a member")
 @app_commands.describe(member="User to kick", reason="Kick reason")
-@is_owner_or_admin()
+@is_trusted()
 async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = None):
     if not interaction.guild.me.guild_permissions.kick_members:
         await interaction.response.send_message("I need the **Kick Members** permission for this.", ephemeral=True)
@@ -848,7 +854,7 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
 
 @bot.tree.command(name="purge", description="Delete a number of messages in a channel")
 @app_commands.describe(count="How many messages to delete (max 100)", channel="Channel (defaults to current channel)")
-@is_owner_or_admin()
+@is_trusted()
 async def purge(interaction: discord.Interaction, count: int, channel: discord.TextChannel = None):
     channel = channel or interaction.channel
     count = max(1, min(count, 100))
@@ -859,7 +865,7 @@ async def purge(interaction: discord.Interaction, count: int, channel: discord.T
 
 @bot.tree.command(name="lockchannel", description="Lock a channel so no one can type")
 @app_commands.describe(channel="Channel (defaults to current channel)")
-@is_owner_or_admin()
+@is_trusted()
 async def lockchannel(interaction: discord.Interaction, channel: discord.TextChannel = None):
     channel = channel or interaction.channel
     await channel.set_permissions(interaction.guild.default_role, send_messages=False, reason="Channel lock")
@@ -868,7 +874,7 @@ async def lockchannel(interaction: discord.Interaction, channel: discord.TextCha
 
 @bot.tree.command(name="unlockchannel", description="Unlock a channel")
 @app_commands.describe(channel="Channel (defaults to current channel)")
-@is_owner_or_admin()
+@is_trusted()
 async def unlockchannel(interaction: discord.Interaction, channel: discord.TextChannel = None):
     channel = channel or interaction.channel
     await channel.set_permissions(interaction.guild.default_role, overwrite=None, reason="Channel unlock")
@@ -877,7 +883,7 @@ async def unlockchannel(interaction: discord.Interaction, channel: discord.TextC
 
 @bot.tree.command(name="slowmode", description="Set slowmode on a channel")
 @app_commands.describe(seconds="Seconds between messages (0 to disable)", channel="Channel (defaults to current channel)")
-@is_owner_or_admin()
+@is_trusted()
 async def slowmode(interaction: discord.Interaction, seconds: int, channel: discord.TextChannel = None):
     channel = channel or interaction.channel
     seconds = max(0, min(seconds, 21600))
@@ -889,7 +895,7 @@ async def slowmode(interaction: discord.Interaction, seconds: int, channel: disc
 
 
 @bot.tree.command(name="lock", description="Lock down the whole server (blocks sending everywhere)")
-@is_owner_or_admin()
+@is_trusted()
 async def lock(interaction: discord.Interaction):
     if not interaction.guild.me.guild_permissions.manage_channels:
         await interaction.response.send_message("I need the **Manage Channels** permission for this.", ephemeral=True)
@@ -902,7 +908,7 @@ async def lock(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="unlock", description="Lift the lockdown")
-@is_owner_or_admin()
+@is_trusted()
 async def unlock(interaction: discord.Interaction):
     global raiding
     await interaction.response.defer(ephemeral=True)
@@ -914,7 +920,7 @@ async def unlock(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="endraid", description="End an active raid lockdown and unblock the server")
-@is_owner_or_admin()
+@is_trusted()
 async def endraid(interaction: discord.Interaction):
     global raiding
     await interaction.response.defer(ephemeral=True)
@@ -926,7 +932,7 @@ async def endraid(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="raidprotection", description="Turn ON automatic channel-creation raid detection")
-@is_owner_or_admin()
+@is_trusted()
 async def raidprotection_cmd(interaction: discord.Interaction):
     global channel_raid_protection
     channel_raid_protection = True
@@ -937,7 +943,7 @@ async def raidprotection_cmd(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="raidprotectionoff", description="Turn OFF automatic channel-creation raid detection")
-@is_owner_or_admin()
+@is_trusted()
 async def raidprotectionoff_cmd(interaction: discord.Interaction):
     global channel_raid_protection
     channel_raid_protection = False
@@ -945,7 +951,7 @@ async def raidprotectionoff_cmd(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="spamdetect", description="Turn ON auto-mute for spammers")
-@is_owner_or_admin()
+@is_trusted()
 async def spamdetect_cmd(interaction: discord.Interaction):
     global spam_detection
     spam_detection = True
@@ -953,7 +959,7 @@ async def spamdetect_cmd(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="spamdetectoff", description="Turn OFF auto-mute for spammers")
-@is_owner_or_admin()
+@is_trusted()
 async def spamdetectoff_cmd(interaction: discord.Interaction):
     global spam_detection
     spam_detection = False
@@ -961,7 +967,7 @@ async def spamdetectoff_cmd(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="invitefilter", description="Turn ON auto-delete of Discord invites by non-admins")
-@is_owner_or_admin()
+@is_trusted()
 async def invitefilter_cmd(interaction: discord.Interaction):
     global invite_filter
     invite_filter = True
@@ -969,7 +975,7 @@ async def invitefilter_cmd(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="invitefilteroff", description="Turn OFF auto-delete of Discord invites")
-@is_owner_or_admin()
+@is_trusted()
 async def invitefilteroff_cmd(interaction: discord.Interaction):
     global invite_filter
     invite_filter = False
@@ -977,7 +983,7 @@ async def invitefilteroff_cmd(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="antibot", description="Turn ON auto-kick of bots that join unapproved")
-@is_owner_or_admin()
+@is_trusted()
 async def antibot_cmd(interaction: discord.Interaction):
     global antibot
     antibot = True
@@ -985,7 +991,7 @@ async def antibot_cmd(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="antibotoff", description="Turn OFF auto-kick of bots")
-@is_owner_or_admin()
+@is_trusted()
 async def antibotoff_cmd(interaction: discord.Interaction):
     global antibot
     antibot = False
@@ -994,7 +1000,7 @@ async def antibotoff_cmd(interaction: discord.Interaction):
 
 @bot.tree.command(name="welcomerole", description="Auto-assign a role to new members (no role = off)")
 @app_commands.describe(role="Role to assign on join")
-@is_owner_or_admin()
+@is_trusted()
 async def welcomerole(interaction: discord.Interaction, role: discord.Role = None):
     global WELCOME_ROLE_ID
     WELCOME_ROLE_ID = role.id if role else None
@@ -1006,7 +1012,7 @@ async def welcomerole(interaction: discord.Interaction, role: discord.Role = Non
 
 @bot.tree.command(name="autoresponse", description="Add an auto-response (word triggers a reply)")
 @app_commands.describe(trigger="Word or phrase to trigger on", response="What the bot replies")
-@is_owner_or_admin()
+@is_trusted()
 async def autoresponse(interaction: discord.Interaction, trigger: str, response: str):
     AUTO_RESPONSES[trigger.lower()] = response
     await interaction.response.send_message(f"Auto-response added: `{trigger}` -> {response}", ephemeral=True)
@@ -1014,7 +1020,7 @@ async def autoresponse(interaction: discord.Interaction, trigger: str, response:
 
 @bot.tree.command(name="autoresponseremove", description="Remove an auto-response")
 @app_commands.describe(trigger="The trigger word to remove")
-@is_owner_or_admin()
+@is_trusted()
 async def autoresponseremove(interaction: discord.Interaction, trigger: str):
     removed = AUTO_RESPONSES.pop(trigger.lower(), None)
     await interaction.response.send_message(
@@ -1024,7 +1030,7 @@ async def autoresponseremove(interaction: discord.Interaction, trigger: str):
 
 
 @bot.tree.command(name="autoresponselist", description="List all auto-responses")
-@is_owner_or_admin()
+@is_trusted()
 async def autoresponselist(interaction: discord.Interaction):
     if not AUTO_RESPONSES:
         await interaction.response.send_message("No auto-responses set.", ephemeral=True)
@@ -1034,7 +1040,7 @@ async def autoresponselist(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="badwords", description="Turn ON bad word filter (deletes messages with profanity)")
-@is_owner_or_admin()
+@is_trusted()
 async def badwords_cmd(interaction: discord.Interaction):
     global badwords_filter
     badwords_filter = True
@@ -1042,7 +1048,7 @@ async def badwords_cmd(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="badwordsoff", description="Turn OFF bad word filter")
-@is_owner_or_admin()
+@is_trusted()
 async def badwordsoff_cmd(interaction: discord.Interaction):
     global badwords_filter
     badwords_filter = False
@@ -1050,7 +1056,7 @@ async def badwordsoff_cmd(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="antilink", description="Turn ON link blocking (all links blocked unless whitelisted)")
-@is_owner_or_admin()
+@is_trusted()
 async def antilink_cmd(interaction: discord.Interaction):
     global antilink
     antilink = True
@@ -1058,7 +1064,7 @@ async def antilink_cmd(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="antilinkoff", description="Turn OFF link blocking")
-@is_owner_or_admin()
+@is_trusted()
 async def antilinkoff_cmd(interaction: discord.Interaction):
     global antilink
     antilink = False
@@ -1067,7 +1073,7 @@ async def antilinkoff_cmd(interaction: discord.Interaction):
 
 @bot.tree.command(name="linkwhitelist", description="Allow a domain through the link filter (e.g. youtube.com)")
 @app_commands.describe(domain="Domain to allow")
-@is_owner_or_admin()
+@is_trusted()
 async def linkwhitelist(interaction: discord.Interaction, domain: str):
     LINK_WHITELIST.add(domain.lower())
     await interaction.response.send_message(
@@ -1078,7 +1084,7 @@ async def linkwhitelist(interaction: discord.Interaction, domain: str):
 
 @bot.tree.command(name="linkwhitelistremove", description="Remove a domain from the link whitelist")
 @app_commands.describe(domain="Domain to remove")
-@is_owner_or_admin()
+@is_trusted()
 async def linkwhitelistremove(interaction: discord.Interaction, domain: str):
     LINK_WHITELIST.discard(domain.lower())
     await interaction.response.send_message(
@@ -1089,7 +1095,7 @@ async def linkwhitelistremove(interaction: discord.Interaction, domain: str):
 
 @bot.tree.command(name="whitelist", description="Exempt a user or role from message protections (links, bad words, spam, invites)")
 @app_commands.describe(target="User or role to exempt")
-@is_owner_or_admin()
+@is_trusted()
 async def whitelist(interaction: discord.Interaction, target: Union[discord.Member, discord.Role]):
     if isinstance(target, discord.Role):
         WHITELIST_ROLE_IDS.add(target.id)
@@ -1101,7 +1107,7 @@ async def whitelist(interaction: discord.Interaction, target: Union[discord.Memb
 
 @bot.tree.command(name="whitelistremove", description="Remove a user or role from the whitelist")
 @app_commands.describe(target="User or role to un-exempt")
-@is_owner_or_admin()
+@is_trusted()
 async def whitelistremove(interaction: discord.Interaction, target: Union[discord.Member, discord.Role]):
     if isinstance(target, discord.Role):
         WHITELIST_ROLE_IDS.discard(target.id)
@@ -1115,7 +1121,7 @@ config_group = app_commands.Group(name="config", description="Save, load or dele
 
 
 @config_group.command(name="create", description="Save all current settings to a config file")
-@is_owner_or_admin()
+@is_trusted()
 async def config_create(interaction: discord.Interaction):
     save_config()
     await audit(interaction.guild, f":floppy_disk: Config saved by {interaction.user}")
@@ -1126,7 +1132,7 @@ async def config_create(interaction: discord.Interaction):
 
 
 @config_group.command(name="load", description="Load settings from the saved config file")
-@is_owner_or_admin()
+@is_trusted()
 async def config_load(interaction: discord.Interaction):
     if load_config():
         await audit(interaction.guild, f":arrows_counterclockwise: Config loaded by {interaction.user}")
@@ -1136,7 +1142,7 @@ async def config_load(interaction: discord.Interaction):
 
 
 @config_group.command(name="delete", description="Delete the saved config file")
-@is_owner_or_admin()
+@is_trusted()
 async def config_delete(interaction: discord.Interaction):
     if os.path.exists(CONFIG_FILE):
         os.remove(CONFIG_FILE)
@@ -1148,6 +1154,35 @@ async def config_delete(interaction: discord.Interaction):
 bot.tree.add_command(config_group)
 
 
+@bot.tree.command(name="ticketadd", description="Add a user to the current ticket")
+@app_commands.describe(member="User to add to the ticket")
+async def ticketadd(interaction: discord.Interaction, member: discord.Member):
+    channel = interaction.channel
+    if not channel.name.startswith("ticket-"):
+        await interaction.response.send_message("Use this inside a ticket channel.", ephemeral=True)
+        return
+    guild = interaction.guild
+    cfg = TICKET_CONFIG
+    opener_id = None
+    try:
+        opener_id = int(channel.topic) if channel.topic else None
+    except (ValueError, TypeError):
+        opener_id = None
+    support_role = guild.get_role(cfg.get("support_role_id")) if cfg else None
+    is_support = support_role is not None and support_role in interaction.user.roles
+    if not (
+        interaction.user.id == OWNER_ID
+        or interaction.user.guild_permissions.administrator
+        or interaction.user.id == opener_id
+        or is_support
+    ):
+        await interaction.response.send_message("Only the ticket owner or support can add people.", ephemeral=True)
+        return
+    await channel.set_permissions(member, **TICKET_MEMBER_PERMS, reason="Ticket add")
+    await channel.send(f"{member.mention} was added to the ticket by {interaction.user.mention}.")
+    await interaction.response.send_message(f"Added {member.mention} to the ticket.", ephemeral=True)
+
+
 @bot.tree.command(name="ticketsetup", description="Set up the ticket system (categories, support role, panel location)")
 @app_commands.describe(
     open_category="Category where opened tickets appear",
@@ -1155,7 +1190,7 @@ bot.tree.add_command(config_group)
     support_role="Role that handles tickets",
     panel_channel="Channel where the Open Ticket button is posted",
 )
-@is_owner_or_admin()
+@is_trusted()
 async def ticketsetup(interaction: discord.Interaction, open_category: discord.CategoryChannel, closed_category: discord.CategoryChannel, support_role: discord.Role, panel_channel: discord.TextChannel):
     global TICKET_CONFIG
     old_panel = TICKET_CONFIG.get("panel_message_id")
@@ -1186,7 +1221,7 @@ async def ticketsetup(interaction: discord.Interaction, open_category: discord.C
 
 
 @bot.tree.command(name="ticketpanel", description="Repost the Open Ticket button panel (uses existing setup)")
-@is_owner_or_admin()
+@is_trusted()
 async def ticketpanel(interaction: discord.Interaction):
     cfg = TICKET_CONFIG
     if not cfg or cfg.get("guild_id") != interaction.guild.id:
@@ -1210,7 +1245,7 @@ async def ticketpanel(interaction: discord.Interaction):
 
 @bot.tree.command(name="auditlog", description="Set which channel receives the bot's audit log")
 @app_commands.describe(channel="Channel for logs")
-@is_owner_or_admin()
+@is_trusted()
 async def auditlog(interaction: discord.Interaction, channel: discord.TextChannel):
     global audit_channel_id
     audit_channel_id = channel.id
@@ -1218,7 +1253,7 @@ async def auditlog(interaction: discord.Interaction, channel: discord.TextChanne
 
 
 @bot.tree.command(name="backup", description="Save the server's channels and roles to a backup file")
-@is_owner_or_admin()
+@is_trusted()
 async def backup(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     data = serialize_guild(interaction.guild)
@@ -1229,7 +1264,7 @@ async def backup(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="restore", description="Recreate missing channels and roles from the last backup")
-@is_owner_or_admin()
+@is_trusted()
 async def restore(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     if not os.path.exists(BACKUP_FILE):
@@ -1248,7 +1283,7 @@ async def restore(interaction: discord.Interaction):
 
 @bot.tree.command(name="cleanupdays", description="Set how many days a private room can be inactive before auto-delete (0 = off)")
 @app_commands.describe(days="Days (0 disables auto-cleanup)")
-@is_owner_or_admin()
+@is_trusted()
 async def cleanupdays(interaction: discord.Interaction, days: int):
     global ROOM_INACTIVE_DAYS
     ROOM_INACTIVE_DAYS = max(0, min(days, 365))
@@ -1259,7 +1294,7 @@ async def cleanupdays(interaction: discord.Interaction, days: int):
 
 
 @bot.tree.command(name="cleanuprooms", description="Run the inactive-room cleanup right now")
-@is_owner_or_admin()
+@is_trusted()
 async def cleanuprooms(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     before = {ch.id for ch in interaction.guild.text_channels if ch.name.startswith(ROOM_PREFIX) or ch.name.startswith(MARKET_PREFIX)}
@@ -1270,7 +1305,7 @@ async def cleanuprooms(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="raidstatus", description="Show all protection settings")
-@is_owner_or_admin()
+@is_trusted()
 async def raidstatus(interaction: discord.Interaction):
     await interaction.response.send_message(
         f"Raid mode: {'**ACTIVE** - server locked' if raiding else 'off'}\n"
@@ -1292,7 +1327,7 @@ async def raidstatus(interaction: discord.Interaction):
 @bot.tree.error
 async def on_app_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("You need **Administrator** permission to use this.", ephemeral=True)
+        await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
     else:
         print(error)
 
