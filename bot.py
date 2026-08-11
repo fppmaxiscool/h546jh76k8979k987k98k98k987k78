@@ -187,7 +187,7 @@ def load_config():
 
 
 def is_private_room(channel):
-    return channel is not None and channel.category is not None and channel.category.name == "Private Rooms"
+    return channel is not None and channel.category is not None and channel.name.startswith("room-")
 
 
 async def announce(guild, text):
@@ -423,10 +423,11 @@ async def restore_guild(guild, data):
 
 async def cleanup_rooms():
     for guild in bot.guilds:
-        category = discord.utils.get(guild.categories, name="Private Rooms")
-        if category is None or ROOM_INACTIVE_DAYS <= 0:
+        if ROOM_INACTIVE_DAYS <= 0:
             continue
-        for ch in category.text_channels:
+        for ch in guild.text_channels:
+            if not ch.name.startswith("room-"):
+                continue
             try:
                 last = None
                 async for m in ch.history(limit=1):
@@ -585,23 +586,26 @@ async def on_message(message):
     member2="Optional second person",
     member3="Optional third person",
     role="Optional role that can only WATCH (view, read history, invites, reactions)",
+    category="Optional category to create the channel in",
 )
 @is_owner_or_admin()
-async def room(interaction: discord.Interaction, member: discord.Member, member2: discord.Member = None, member3: discord.Member = None, role: discord.Role = None):
+async def room(interaction: discord.Interaction, member: discord.Member, member2: discord.Member = None, member3: discord.Member = None, role: discord.Role = None, category: discord.CategoryChannel = None):
     members = [m for m in (member, member2, member3) if m is not None]
     if not interaction.guild.me.guild_permissions.manage_channels:
         await interaction.response.send_message("I need the **Manage Channels** permission for this.", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
 
-    category = discord.utils.get(interaction.guild.categories, name="Private Rooms")
     if category is None:
-        category = await interaction.guild.create_category("Private Rooms")
+        category = discord.utils.get(interaction.guild.categories, name="Private Rooms")
+        if category is None:
+            category = await interaction.guild.create_category("Private Rooms")
+        await category.set_permissions(interaction.guild.default_role, view_channel=False, reason="Private room")
 
     name = "room-" + "-".join(m.name.lower() for m in members[:3])[:80]
     channel = await interaction.guild.create_text_channel(name, category=category)
 
-    await category.set_permissions(interaction.guild.default_role, view_channel=False, reason="Private room")
+    await channel.set_permissions(interaction.guild.default_role, view_channel=False, reason="Private room")
     for m in members:
         await channel.set_permissions(m, view_channel=True, send_messages=True, reason="Private room")
     if role is not None:
@@ -1089,15 +1093,9 @@ async def cleanupdays(interaction: discord.Interaction, days: int):
 @is_owner_or_admin()
 async def cleanuprooms(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    before = set()
-    category = discord.utils.get(interaction.guild.categories, name="Private Rooms")
-    if category:
-        before = {ch.id for ch in category.text_channels}
+    before = {ch.id for ch in interaction.guild.text_channels if ch.name.startswith("room-")}
     await cleanup_rooms()
-    after = set()
-    category = discord.utils.get(interaction.guild.categories, name="Private Rooms")
-    if category:
-        after = {ch.id for ch in category.text_channels}
+    after = {ch.id for ch in interaction.guild.text_channels if ch.name.startswith("room-")}
     removed = len(before - after)
     await interaction.followup.send(f"Cleanup done. Deleted **{removed}** inactive room(s).")
 
