@@ -857,6 +857,7 @@ async def marketplacecreate(interaction: discord.Interaction, member: discord.Me
 
 @bot.tree.command(name="roomadd", description="Add a user to your private room")
 @app_commands.describe(member="User to add", channel="Room (defaults to current channel)")
+@is_trusted()
 async def roomadd(interaction: discord.Interaction, member: discord.Member, channel: discord.TextChannel = None):
     channel = channel or interaction.channel
     if not is_private_room(channel) or not channel.permissions_for(interaction.user).view_channel:
@@ -868,6 +869,7 @@ async def roomadd(interaction: discord.Interaction, member: discord.Member, chan
 
 @bot.tree.command(name="roomremove", description="Remove a user from your private room")
 @app_commands.describe(member="User to remove", channel="Room (defaults to current channel)")
+@is_trusted()
 async def roomremove(interaction: discord.Interaction, member: discord.Member, channel: discord.TextChannel = None):
     channel = channel or interaction.channel
     if not is_private_room(channel) or not channel.permissions_for(interaction.user).view_channel:
@@ -879,6 +881,7 @@ async def roomremove(interaction: discord.Interaction, member: discord.Member, c
 
 @bot.tree.command(name="roomclose", description="Close and delete your private room")
 @app_commands.describe(channel="Room (defaults to current channel)")
+@is_trusted()
 async def roomclose(interaction: discord.Interaction, channel: discord.TextChannel = None):
     channel = channel or interaction.channel
     if not is_private_room(channel) or not channel.permissions_for(interaction.user).manage_channels:
@@ -892,6 +895,7 @@ async def roomclose(interaction: discord.Interaction, channel: discord.TextChann
 
 @bot.tree.command(name="roomlist", description="Show who has access to a private room")
 @app_commands.describe(channel="Room (defaults to current channel)")
+@is_trusted()
 async def roomlist(interaction: discord.Interaction, channel: discord.TextChannel = None):
     channel = channel or interaction.channel
     if not is_private_room(channel) or not channel.permissions_for(interaction.user).view_channel:
@@ -1277,6 +1281,7 @@ bot.tree.add_command(config_group)
 
 @bot.tree.command(name="ticketadd", description="Add a user to the current ticket")
 @app_commands.describe(member="User to add to the ticket")
+@is_trusted()
 async def ticketadd(interaction: discord.Interaction, member: discord.Member):
     channel = interaction.channel
     if not channel.name.startswith("ticket-"):
