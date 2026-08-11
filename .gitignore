@@ -1,0 +1,4 @@
+__pycache__/
+.env
+bot-config.json
+bot-backup.json
