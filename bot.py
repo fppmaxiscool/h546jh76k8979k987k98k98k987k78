@@ -1379,7 +1379,6 @@ async def ai(interaction: discord.Interaction, message: str):
 
 
 @bot.tree.command(name="aimodels", description="Show the AI model rotation list")
-@is_trusted()
 async def aimodels(interaction: discord.Interaction):
     lines = "\n".join(f"{'->' if i == AI_MODEL_INDEX else '  '} `{m}`" for i, m in enumerate(AI_MODELS))
     await interaction.response.send_message(f"**AI model rotation:**\n{lines}", ephemeral=True)
