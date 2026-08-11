@@ -110,6 +110,16 @@ DEFAULT_LINK_WHITELIST = {
     "imgur.com", "cdn.discordapp.com",
 }
 
+TICKET_CONFIG = {}
+TICKET_MEMBER_PERMS = dict(
+    view_channel=True, read_message_history=True, send_messages=True,
+    attach_files=True, embed_links=True, add_reactions=True,
+    use_external_emojis=True, use_external_stickers=True,
+    use_application_commands=True, create_public_threads=True,
+    create_private_threads=True, send_messages_in_threads=True,
+    mention_everyone=False, manage_webhooks=False,
+)
+
 AUDIT_CHANNEL_NAME = "bot-logs"
 BACKUP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot-backup.json")
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot-config.json")
@@ -186,8 +196,16 @@ def load_config():
     return True
 
 
+ROOM_PREFIX = "room-"
+MARKET_PREFIX = "examples-marketplace-"
+
+
 def is_private_room(channel):
-    return channel is not None and channel.category is not None and channel.name.startswith("room-")
+    return (
+        channel is not None
+        and channel.category is not None
+        and (channel.name.startswith(ROOM_PREFIX) or channel.name.startswith(MARKET_PREFIX))
+    )
 
 
 async def announce(guild, text):
@@ -426,7 +444,7 @@ async def cleanup_rooms():
         if ROOM_INACTIVE_DAYS <= 0:
             continue
         for ch in guild.text_channels:
-            if not ch.name.startswith("room-"):
+            if not (ch.name.startswith(ROOM_PREFIX) or ch.name.startswith(MARKET_PREFIX)):
                 continue
             try:
                 last = None
@@ -438,6 +456,90 @@ async def cleanup_rooms():
                     await audit(guild, f":broom: Deleted inactive room **{ch.name}** (no messages in {ROOM_INACTIVE_DAYS} days)")
             except discord.HTTPException:
                 continue
+
+
+async def create_private_channel(guild, creator, members, role, category, prefix, default_category_name):
+    if category is None:
+        category = discord.utils.get(guild.categories, name=default_category_name)
+        if category is None:
+            category = await guild.create_category(default_category_name)
+        await category.set_permissions(guild.default_role, view_channel=False, reason="Private channel")
+    name = (prefix + "-".join(m.name.lower() for m in members[:3]))[:100].rstrip("-")
+    channel = await guild.create_text_channel(name, category=category)
+    await channel.set_permissions(guild.default_role, view_channel=False, reason="Private channel")
+    for m in members:
+        await channel.set_permissions(m, view_channel=True, send_messages=True, reason="Private channel")
+    if role is not None:
+        await channel.set_permissions(role, **WATCHER_PERMS, reason="Watcher role")
+    await channel.set_permissions(creator, view_channel=True, send_messages=True, reason="Private channel")
+    await channel.set_permissions(guild.me, view_channel=True, send_messages=True, reason="Private channel")
+    return channel
+
+
+class TicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Open Ticket", style=discord.ButtonStyle.primary, custom_id="ticket_open", emoji="\U0001f3ab")
+    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        cfg = TICKET_CONFIG
+        if not cfg or cfg.get("guild_id") != guild.id:
+            await interaction.response.send_message("Tickets aren't set up yet. Ask an admin to run /ticketsetup.", ephemeral=True)
+            return
+        open_category = guild.get_channel(cfg.get("open_category_id"))
+        if not isinstance(open_category, discord.CategoryChannel):
+            await interaction.response.send_message("The open-ticket category is missing.", ephemeral=True)
+            return
+        name = f"ticket-{interaction.user.name.lower()}"
+        if discord.utils.get(open_category.text_channels, name=name):
+            await interaction.response.send_message("You already have an open ticket.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        channel = await guild.create_text_channel(name, category=open_category, topic=str(interaction.user.id))
+        await channel.set_permissions(guild.default_role, view_channel=False, send_messages=False, reason="Ticket")
+        await channel.set_permissions(interaction.user, **TICKET_MEMBER_PERMS, reason="Ticket")
+        support_role = guild.get_role(cfg.get("support_role_id"))
+        if support_role is not None:
+            await channel.set_permissions(support_role, **TICKET_MEMBER_PERMS, reason="Ticket support")
+        await channel.send(
+            f"Ticket opened by {interaction.user.mention}. Support will help you shortly.",
+            view=CloseTicketView(),
+        )
+        await interaction.followup.send(f"Ticket opened: {channel.mention}")
+
+
+class CloseTicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, custom_id="ticket_close")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        cfg = TICKET_CONFIG
+        if not cfg or cfg.get("guild_id") != guild.id:
+            await interaction.response.send_message("Tickets aren't set up.", ephemeral=True)
+            return
+        closed_category = guild.get_channel(cfg.get("closed_category_id"))
+        if not isinstance(closed_category, discord.CategoryChannel):
+            await interaction.response.send_message("The closed-ticket category is missing.", ephemeral=True)
+            return
+        channel = interaction.channel
+        if channel.category == closed_category:
+            await interaction.response.send_message("This ticket is already closed.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        opener_id = None
+        try:
+            opener_id = int(channel.topic) if channel.topic else None
+        except (ValueError, TypeError):
+            opener_id = None
+        if opener_id:
+            opener = guild.get_member(opener_id)
+            if opener is not None:
+                await channel.set_permissions(opener, view_channel=True, send_messages=False, reason="Ticket closed")
+        await channel.edit(category=closed_category, reason="Ticket closed")
+        await channel.send(f":lock: Ticket closed by {interaction.user.mention}. Openers can no longer reply.")
 
 
 async def room_cleanup_loop():
@@ -596,26 +698,33 @@ async def room(interaction: discord.Interaction, member: discord.Member, member2
         return
     await interaction.response.defer(ephemeral=True)
 
-    if category is None:
-        category = discord.utils.get(interaction.guild.categories, name="Private Rooms")
-        if category is None:
-            category = await interaction.guild.create_category("Private Rooms")
-        await category.set_permissions(interaction.guild.default_role, view_channel=False, reason="Private room")
-
-    name = "room-" + "-".join(m.name.lower() for m in members[:3])[:80]
-    channel = await interaction.guild.create_text_channel(name, category=category)
-
-    await channel.set_permissions(interaction.guild.default_role, view_channel=False, reason="Private room")
-    for m in members:
-        await channel.set_permissions(m, view_channel=True, send_messages=True, reason="Private room")
-    if role is not None:
-        await channel.set_permissions(role, **WATCHER_PERMS, reason="Watcher role")
-    await channel.set_permissions(interaction.user, view_channel=True, send_messages=True, reason="Private room")
-    await channel.set_permissions(interaction.guild.me, view_channel=True, send_messages=True, reason="Private room")
+    channel = await create_private_channel(interaction.guild, interaction.user, members, role, category, ROOM_PREFIX, "Private Rooms")
 
     names = ", ".join(m.mention for m in members)
     await channel.send(f"Private channel for {names} created by {interaction.user.mention}.")
     await audit(interaction.guild, f":house: Room **{channel.name}** created by {interaction.user} for {', '.join(m.name for m in members)}")
+    await interaction.followup.send(f"Done. {channel.mention}")
+
+
+@bot.tree.command(name="marketplacecreate", description="Create a marketplace channel (same as a private room)")
+@app_commands.describe(
+    member="Who the channel is for",
+    member2="Optional second person",
+    member3="Optional third person",
+    role="Optional role that can only WATCH (view, read history, invites, reactions)",
+    category="Optional category to create the channel in",
+)
+@is_owner_or_admin()
+async def marketplacecreate(interaction: discord.Interaction, member: discord.Member, member2: discord.Member = None, member3: discord.Member = None, role: discord.Role = None, category: discord.CategoryChannel = None):
+    members = [m for m in (member, member2, member3) if m is not None]
+    if not interaction.guild.me.guild_permissions.manage_channels:
+        await interaction.response.send_message("I need the **Manage Channels** permission for this.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    channel = await create_private_channel(interaction.guild, interaction.user, members, role, category, MARKET_PREFIX, "Marketplace")
+    names = ", ".join(m.mention for m in members)
+    await channel.send(f"Marketplace channel for {names} created by {interaction.user.mention}.")
+    await audit(interaction.guild, f":shopping_cart: Marketplace **{channel.name}** created by {interaction.user} for {', '.join(m.name for m in members)}")
     await interaction.followup.send(f"Done. {channel.mention}")
 
 
@@ -1039,6 +1148,66 @@ async def config_delete(interaction: discord.Interaction):
 bot.tree.add_command(config_group)
 
 
+@bot.tree.command(name="ticketsetup", description="Set up the ticket system (categories, support role, panel location)")
+@app_commands.describe(
+    open_category="Category where opened tickets appear",
+    closed_category="Category where closed tickets are moved to",
+    support_role="Role that handles tickets",
+    panel_channel="Channel where the Open Ticket button is posted",
+)
+@is_owner_or_admin()
+async def ticketsetup(interaction: discord.Interaction, open_category: discord.CategoryChannel, closed_category: discord.CategoryChannel, support_role: discord.Role, panel_channel: discord.TextChannel):
+    global TICKET_CONFIG
+    old_panel = TICKET_CONFIG.get("panel_message_id")
+    if old_panel:
+        try:
+            old_channel = interaction.guild.get_channel(TICKET_CONFIG.get("panel_channel_id"))
+            if old_channel is not None:
+                msg = await old_channel.fetch_message(old_panel)
+                await msg.delete()
+        except discord.HTTPException:
+            pass
+    TICKET_CONFIG = {
+        "guild_id": interaction.guild.id,
+        "open_category_id": open_category.id,
+        "closed_category_id": closed_category.id,
+        "support_role_id": support_role.id,
+        "panel_channel_id": panel_channel.id,
+        "panel_message_id": None,
+    }
+    msg = await panel_channel.send("\U0001f3ab **Need help?** Click the button below to open a ticket.", view=TicketView())
+    TICKET_CONFIG["panel_message_id"] = msg.id
+    await audit(interaction.guild, f"\U0001f3ab Ticket system set up by {interaction.user}")
+    await interaction.response.send_message(
+        f"Ticket system set up. Panel posted in {panel_channel.mention}.\n"
+        f"Opened tickets: **{open_category.name}** | Closed tickets: **{closed_category.name}** | Support: **{support_role.name}**",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="ticketpanel", description="Repost the Open Ticket button panel (uses existing setup)")
+@is_owner_or_admin()
+async def ticketpanel(interaction: discord.Interaction):
+    cfg = TICKET_CONFIG
+    if not cfg or cfg.get("guild_id") != interaction.guild.id:
+        await interaction.response.send_message("Tickets aren't set up yet. Run /ticketsetup first.", ephemeral=True)
+        return
+    channel = interaction.guild.get_channel(cfg.get("panel_channel_id"))
+    if not isinstance(channel, discord.TextChannel):
+        await interaction.response.send_message("The panel channel is missing. Run /ticketsetup again.", ephemeral=True)
+        return
+    old_panel = cfg.get("panel_message_id")
+    if old_panel:
+        try:
+            msg = await channel.fetch_message(old_panel)
+            await msg.delete()
+        except discord.HTTPException:
+            pass
+    msg = await channel.send("\U0001f3ab **Need help?** Click the button below to open a ticket.", view=TicketView())
+    cfg["panel_message_id"] = msg.id
+    await interaction.response.send_message(f"Panel reposted in {channel.mention}.", ephemeral=True)
+
+
 @bot.tree.command(name="auditlog", description="Set which channel receives the bot's audit log")
 @app_commands.describe(channel="Channel for logs")
 @is_owner_or_admin()
@@ -1093,9 +1262,9 @@ async def cleanupdays(interaction: discord.Interaction, days: int):
 @is_owner_or_admin()
 async def cleanuprooms(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    before = {ch.id for ch in interaction.guild.text_channels if ch.name.startswith("room-")}
+    before = {ch.id for ch in interaction.guild.text_channels if ch.name.startswith(ROOM_PREFIX) or ch.name.startswith(MARKET_PREFIX)}
     await cleanup_rooms()
-    after = {ch.id for ch in interaction.guild.text_channels if ch.name.startswith("room-")}
+    after = {ch.id for ch in interaction.guild.text_channels if ch.name.startswith(ROOM_PREFIX) or ch.name.startswith(MARKET_PREFIX)}
     removed = len(before - after)
     await interaction.followup.send(f"Cleanup done. Deleted **{removed}** inactive room(s).")
 
