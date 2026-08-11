@@ -49,6 +49,8 @@ AI_EXCLUDE = ("content-safety", "clip", "lyria", "embed", "rerank", "whisper", "
 AI_ENABLED = bool(AI_API_KEY)
 AI_CHANNEL_ID = None
 AI_MEMORY = {}
+USER_MODELS = {}
+FAILED_MODELS = {}
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -576,15 +578,23 @@ class CloseTicketView(discord.ui.View):
 SYSTEM_PROMPT = "You are a helpful assistant in a Discord server. Be concise, friendly, and use plain text. Keep replies reasonably short."
 
 
-async def ai_generate(prompt, channel_id):
+async def ai_generate(prompt, channel_id, user_id=None):
     global AI_MODEL_INDEX
     history = AI_MEMORY.get(channel_id, deque(maxlen=10))
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages += [{"role": r, "content": t} for r, t in history]
     messages.append({"role": "user", "content": prompt})
+
+    pref = USER_MODELS.get(user_id) if user_id else None
+    rotation = [AI_MODELS[(AI_MODEL_INDEX + i) % len(AI_MODELS)] for i in range(len(AI_MODELS))]
+    if pref and pref in AI_MODELS:
+        rotation = [pref] + [m for m in rotation if m != pref]
+
+    now = time.time()
     errors = []
-    for i in range(len(AI_MODELS)):
-        model = AI_MODELS[(AI_MODEL_INDEX + i) % len(AI_MODELS)]
+    for model in rotation:
+        if model in FAILED_MODELS and now < FAILED_MODELS[model]:
+            continue
         payload = {"model": model, "messages": messages}
         headers = {"Authorization": f"Bearer {AI_API_KEY}"}
         try:
@@ -598,12 +608,17 @@ async def ai_generate(prompt, channel_id):
                 if resp.status != 200:
                     msg = data.get("error", {}).get("message", f"HTTP {resp.status}")
                     errors.append(f"{model}: {msg[:80]}")
+                    if resp.status == 429:
+                        FAILED_MODELS[model] = now + 600
+                    elif resp.status >= 500:
+                        FAILED_MODELS[model] = now + 120
                     continue
                 text = data["choices"][0]["message"]["content"]
         except Exception as e:
             errors.append(f"{model}: {str(e)[:80]}")
+            FAILED_MODELS[model] = now + 120
             continue
-        AI_MODEL_INDEX = (AI_MODEL_INDEX + i + 1) % len(AI_MODELS)
+        AI_MODEL_INDEX = (AI_MODELS.index(model) + 1) % len(AI_MODELS)
         AI_MEMORY[channel_id] = deque(list(history) + [("user", prompt), ("assistant", text)], maxlen=10)
         return text, None
     return None, "; ".join(errors)
@@ -801,7 +816,7 @@ async def on_message(message):
 
     if AI_ENABLED and AI_CHANNEL_ID and message.channel.id == AI_CHANNEL_ID:
         async with message.channel.typing():
-            text, err = await ai_generate(content, message.channel.id)
+            text, err = await ai_generate(content, message.channel.id, message.author.id)
         if err:
             await message.channel.send(f":warning: AI error: {fit(err, 300)}")
         else:
@@ -1375,11 +1390,34 @@ async def ai(interaction: discord.Interaction, message: str):
         await interaction.response.send_message("AI isn't enabled. Ask an admin to set the AI_API_KEY variable.", ephemeral=True)
         return
     await interaction.response.defer()
-    text, err = await ai_generate(message, interaction.channel_id)
+    text, err = await ai_generate(message, interaction.channel_id, interaction.user.id)
     if err:
         await interaction.followup.send(f":warning: AI error: {fit(err, 300)}")
     else:
         await interaction.followup.send(fit(text))
+
+
+@bot.tree.command(name="switchmodel", description="Switch which AI model YOU use (auto = follow the rotation)")
+@app_commands.describe(model="Model to use, or 'auto'")
+async def switchmodel(interaction: discord.Interaction, model: str):
+    if model.lower() == "auto":
+        USER_MODELS.pop(interaction.user.id, None)
+        await interaction.response.send_message("Using the automatic rotation again.", ephemeral=True)
+        return
+    if model not in AI_MODELS:
+        await interaction.response.send_message(
+            f"Unknown model. Pick one with the suggestions, or type `auto`.",
+            ephemeral=True,
+        )
+        return
+    USER_MODELS[interaction.user.id] = model
+    await interaction.response.send_message(f"Your AI model is now `{model}`.", ephemeral=True)
+
+
+@switchmodel.autocomplete("model")
+async def switchmodel_autocomplete(interaction: discord.Interaction, current: str):
+    choices = [m for m in AI_MODELS if current.lower() in m.lower()][:25]
+    return [app_commands.Choice(name=m, value=m) for m in choices]
 
 
 @bot.tree.command(name="aimodels", description="Show the AI model rotation list")
