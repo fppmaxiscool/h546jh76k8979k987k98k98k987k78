@@ -38,6 +38,7 @@ AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
 AI_MODEL = os.getenv("AI_MODEL", "deepseek-chat").strip()
 AI_ENABLED = bool(AI_API_KEY)
 AI_MEMORY = {}
+AI_CHANNEL_ID = None
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -54,9 +55,14 @@ CHANNEL_CREATE_WINDOW = 3
 CHANNEL_CREATE_COUNT = 4
 CHANNEL_CREATE_LOG = deque(maxlen=100)
 
-SPAM_WINDOW = 5
-SPAM_COUNT = 5
+spam_window = 5
+spam_count = 5
+spam_mute_minutes = 10
+spam_ban_offenses = 3
+SPAM_OFFENSES = defaultdict(int)
 MESSAGE_LOG = defaultdict(lambda: deque(maxlen=100))
+RAID_SLOWMODE = 0
+RAID_SLOWMODE_SAVED = {}
 
 AI_LIMIT = 10
 AI_WINDOW = 3600
@@ -69,17 +75,157 @@ DISCORD_INVITE_RE = re.compile(
 LINK_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 
 BAD_WORDS = [
-    "nigger", "nigga", "nga", "nig", "niqqa", "negro", "coon", "spic", "chink", "kike", "wetback", "gook",
-    "faggot", "fag", "cunt", "whore", "slut", "bitch",
-    "fuck", "fucking", "fucker", "fuckface", "fuckstick", "motherfucker", "motherfucking",
-    "asshole", "dick", "dickhead", "dickface", "pussy", "twat",
-    "retard", "retarded", "bastard", "cock", "cocksucker", "wanker", "dumbass", "jackass",
-    "bitchass", "cuntface", "cum", "cumshot", "blowjob",
-    "rape", "raped", "raping", "rapist", "porn", "porno", "pornhub", "porntube", "xvideos",
-    "hentai", "onlyfans", "sex", "sexy", "sexting", "naked", "nude", "nudes", "boobs",
-    "tits", "titty", "dickpic", "nudity", "kill yourself", "kill urself", "kys", "die",
-    "kms", "suicide", "suicidal", "self harm", "self-harm", "neck yourself", "unlive", "self delete",
-    "fuck you", "shut the fuck up",
+    "nigger", "nigga", "niggas", "niggah", "niggaz", "nga", "nig", "niqqa", "negro", "negress",
+    "coon", "coonass", "coonface", "coonfuck", "jigaboo", "jig", "zigaboo", "sambo", "mammy",
+    "uncle tom", "unclestom", "porch monkey", "porchmonkey", "jungle bunny", "junglebunny",
+    "tar baby", "tarbaby", "spear chucker", "spearchucker", "spook", "nappy head", "nappyhead",
+    "blue gum", "bluegum", "cotton picker", "cottonpicker", "house nigger", "field nigger",
+    "niglet", "nigglet", "nighead", "nignog", "nigaboo", "niggerhead", "nigger lover",
+    "nigger loving", "niggerish", "nigging", "n word", "nword", "nigga lover", "blackie",
+    "blacky", "darkie", "darky", "darkey", "abo", "abbo", "boong", "boonga", "wog", "wogs",
+    "woggy", "golliwog", "golliwogg", "coonery", "spade", "buck", "lambo", "jungle fever",
+    "mullato", "mulatto", "half breed", "halfbreed", "half-breed", "half caste", "halfcaste",
+    "half-caste", "mudblood", "mud blood", "mongrel", "mixed race scum", "nephew of uncle tom",
+    "ching chong", "chingchong", "ching-chong", "chink", "chinks", "chinky", "chinkface",
+    "chinkfuck", "chinkstain", "ching", "chinaman", "chinamen", "chinese nigger", "chinese fag",
+    "slope", "slopes", "slanty", "slant eye", "slanteye", "slant eyed", "slanteyes", "gook",
+    "gooks", "gookface", "gookfuck", "zipperhead", "zipper head", "jap", "japs", "nip", "nippy",
+    "asian nigger", "rice nigger", "rice eater", "riceeater", "rice digger", "dog eater",
+    "dogeater", "cat eater", "cateater", "dogfucker", "eggroll nigger", "ladyboy lover",
+    "dothead", "dot head", "dotface", "curry muncher", "currymuncher", "curry nigger",
+    "curryfucker", "pickle eater", "pickleeater", "pajeet", "bomb head", "bombhead", "bomb maker",
+    "towel head", "towelhead", "turban head", "turbanhead", "raghead", "rag head", "ragheadfuck",
+    "camel jockey", "cameljockey", "camel fucker", "camel fuck", "cameleater", "sand nigger",
+    "sandnigger", "sand monkey", "sandmonkey", "sand face", "sandface", "sand fucker",
+    "sandfucker", "haji", "hajji", "haiji", "mooslim", "moose lim", "muslim cunt", "islamic scum",
+    "kike", "kikes", "kikeface", "kikefuck", "kikette", "jewboy", "jew boy", "jewfucker",
+    "jewwhore", "heeb", "hebe", "hymie", "sheeny", "yid", "yids", "zionazi", "christkiller",
+    "christ killer", "kaffir", "kafir scum", "shylock", "jew shit", "jewcunt", "judenstein",
+    "synagogue of satan", "spic", "spick", "spik", "spicface", "spicfuck", "spickfuck",
+    "chili picker", "chillispicker", "chili nigger", "chile nigger", "beaner", "beaners",
+    "beanerface", "beanerfuck", "wetback", "wet back", "wetbackfuck", "taco nigger", "taconigger",
+    "border hopper", "borderhopper", "greaser", "greasers", "spic whore", "spic slut",
+    "mexican monkey", "mexican nigger", "frijolero", "mayate", "sudaca", "bolillo",
+    "mick", "micks", "micky", "paddy", "paddies", "bogtrotter", "bog trotter", "spud muncher",
+    "spudmuncher", "potato eater", "potatoeater", "potato nigger", "irish nigger", "taffy",
+    "taffs", "sheep shagger", "sheepshagger", "sheep fucker", "sheepfucker", "limey", "limeys",
+    "pom", "poms", "pommy", "pommie", "brit bastard", "britbong", "jock", "jocks", "taig",
+    "taigs", "hun", "huns", "hunfucker", "frog eater", "frogeater", "cheese eating surrender",
+    "wop", "wops", "wopface", "guido", "guidos", "greaseball", "grease ball", "spaghetti nigger",
+    "pizza nigger", "spaghettiface", "kraut", "krauts", "krautface", "krautfuck", "boche",
+    "jerry fucker", "sauerkraut eater", "cracker", "crackers", "crackerass", "honky", "honkey",
+    "honkies", "whitey", "white trash", "whitetrash", "white trash scum", "hillbilly",
+    "hillbillies", "redneck", "red neck", "rednecks", "trailer trash", "trailertrash",
+    "trailer park trash", "mayo monkey", "mayomuncher", "peckerwood", "pecker wood",
+    "white nigger", "whitenigger", "snowflake nigger", "vanilla face", "cracka", "crackah",
+    "charlie", "carlton", "black camp", "gyppo", "gippo", "gyp", "gypo", "gypsy scum",
+    "pikey", "pikeys", "pikey scum", "chav", "chavs", "scally", "scallies", "ned", "neds",
+    "commie", "commies", "commie cunt", "communist pig", "soviet pig", "ruski", "rusky", "ruskie",
+    "bolshevik scum", "gabacho", "gabacha", "gusano", "faggot", "faggots", "faggotry",
+    "faggotfuck", "fagbag", "fagbait", "fagbreath", "fagbutt", "fagfuck", "fagfucker",
+    "fagget", "faggy", "faggish", "faghat", "faghag", "fagmuncher", "fagnugget", "fagot",
+    "fags", "fagtastic", "fagtard", "fagwad", "fagwhore", "fag", "fruit", "fruits",
+    "fudge packer", "fudgepacker", "fudge chamber", "pillow biter", "pillowbiter",
+    "butt pirate", "buttpirate", "bum bandit", "bumbandit", "bum boy", "bumboy",
+    "arse bandit", "arsebandit", "pansy", "poof", "poofter", "poofy", "dyke", "dykes",
+    "bulldyke", "bulldyker", "rug muncher", "rugmuncher", "carpet muncher", "carpetmuncher",
+    "muff diver", "muffdiver", "lesbo", "lesbos", "tranny", "trannies", "trannyfuck",
+    "shemale", "she male", "heshe", "he-she", "sissy", "sissies", "homo", "homos",
+    "queer", "queers", "queerfag", "fudgepacker", "trapfag", "clockable", "malefail",
+    "retard", "retards", "retarded", "retardo", "retardface", "retardfuck", "retardness",
+    "retardedness", "mong", "mongo", "mongoloid", "window licker", "windowlicker", "spaz",
+    "spastic", "spacker", "spacka", "cripple", "crippled", "cripplefuck", "gimp", "gimped",
+    "vegetable", "brain damage", "braindamaged", "braindead", "brain dead", "half wit",
+    "halfwit", "half wits", "halfwits", "moron", "morons", "moronic", "imbecile", "imbeciles",
+    "cretin", "cretins", "cretinous", "idiot", "idiots", "idiotic", "drooler", "mouthbreather",
+    "mouth breather", "special olympics", "fucktard", "fucktards", "shittard", "asshat",
+    "bitch", "bitches", "bitchass", "bitchface", "bitchfit", "bitchfuck", "bitchhole",
+    "bitchlicker", "bitchslap", "bitchslapped", "bitchslapping", "bitchtits", "bitchy",
+    "bitching", "bitchboy", "bitchcan", "bitchdog", "bitchfist", "bitchmuffin", "bitchtaco",
+    "bitch whore", "bitchslut", "slut", "sluts", "slutbag", "slutbucket", "slutface",
+    "sluthead", "slutmachine", "slutpocket", "slutsack", "slutshine", "sluttish", "slutty",
+    "slutwhore", "whore", "whores", "whorebag", "whorebath", "whorechild", "whoreface",
+    "whorehouse", "whoreish", "whoreline", "whoreload", "whorelord", "whoremonger", "whorepipe",
+    "whorepocket", "whoreranch", "whorest", "ho", "hoe", "hoes", "thot", "thots", "skank",
+    "skanks", "skanky", "slag", "slags", "tramp", "tramps", "trollop", "strumpet", "harlot",
+    "bimbo", "bimbos", "cocktease", "cock tease", "prickteaser", "prick teaser", "ballbuster",
+    "ball buster", "ballbusting", "femoid", "foid", "roastie", "cum dumpster", "cumdumpster",
+    "cum dump", "cumdump", "cum guzzler", "cumguzzler", "cum slut", "cumslut", "cum whore",
+    "cumwhore", "cumfart", "cumfucker", "cumgargler", "cumjacker", "cumstain", "creampie",
+    "cream pie", "gangbang", "gang bang", "handjob", "hand job", "blowjob", "blow job",
+    "blowjobs", "rimjob", "rim job", "titjob", "footjob", "deepthroat", "deep throat",
+    "dildo", "dildos", "dildoface", "strap on", "strapon", "doggystyle", "doggy style",
+    "ass to mouth", "gloryhole", "glory hole", "fuck", "fucker", "fuckers", "fucking",
+    "fucked", "fuckface", "fuckhead", "fuckhole", "fuckstick", "fucknut", "fucknugget",
+    "fuckwad", "fuckwit", "fuckwitt", "fuckboy", "fuckboi", "fuckbucket", "fuckbuddy",
+    "fuckbuddies", "fuckery", "fuckfest", "fuckknuckle", "fucklard", "fucklet", "fuckling",
+    "fuckmachine", "fuckmeat", "fuckmonger", "fucknuckle", "fuckoff", "fucko", "fuckrice",
+    "fucktart", "fucktrumpet", "fucktwat", "fuckup", "fuckus", "fuckwaffle", "fuckwhistle",
+    "fucked up", "fuckedup", "motherfucker", "motherfuckers", "motherfucking", "motherfuck",
+    "mofo", "mofos", "fuk", "fukk", "fukker", "fukked", "fck", "fucked in the head",
+    "go fuck yourself", "fuck your mother", "fuck ur mother", "fuck your dad", "fuck off",
+    "holy fuck", "what the fuck", "fuck this", "fuck that", "cunt", "cunts", "cunthead",
+    "cuntface", "cuntbag", "cuntbitch", "cunthole", "cuntlicker", "cuntlips", "cuntmuffin",
+    "cuntrag", "cuntslut", "cuntstruck", "cuntwaffle", "cunty", "cunt hair", "cunthair",
+    "dick", "dicks", "dickhead", "dickface", "dickhole", "dickbag", "dickbrain", "dickcheese",
+    "dickfuck", "dickjuice", "dickmuncher", "dicknose", "dickrider", "dickskin", "dickstain",
+    "dickwad", "dickweed", "dickwhip", "dickwobble", "dickwomble", "dickless", "dickbeater",
+    "dickbreath", "dickheadfuck", "dickpic", "dick pic", "pussy", "pussies", "pussyass",
+    "pussybeater", "pussyblaster", "pussycake", "pussycanyon", "pussydestroyer", "pussyfart",
+    "pussyfuck", "pussyhole", "pussylicker", "pussylips", "pussymuncher", "pussypounder",
+    "pussyslapper", "pussywagon", "pussywhipped", "pussy whipped", "pussyboy", "pussylover",
+    "cock", "cocks", "cockass", "cockbag", "cockbite", "cockblaster", "cockblocker",
+    "cockboy", "cockburger", "cockcage", "cockcamel", "cockcheese", "cockcrap", "cockdick",
+    "cockdrinker", "cockduster", "cockeater", "cockface", "cockfarm", "cockgag", "cockgobbler",
+    "cockgoblin", "cockgrinder", "cockhead", "cockhound", "cockjockey", "cockjug", "cockjunkie",
+    "cocklicker", "cocklips", "cocklodger", "cockmonger", "cockmonster", "cockmouth",
+    "cockmuncher", "cocknugget", "cockpipe", "cockpisser", "cockpleaser", "cockrider",
+    "cockshaft", "cockshiner", "cockslap", "cockslug", "cocksmith", "cocksmoker", "cocksniffer",
+    "cocksplash", "cocksucker", "cocksucking", "cocktart", "cocktease", "cockthrottle",
+    "cocktipper", "cocktip", "cockwaffle", "cockwank", "cockwhore", "cockwobble", "cockwomble",
+    "ass", "arse", "asshole", "assholes", "arsehole", "arseholes", "asshat", "asswipe",
+    "arsewipe", "assclown", "assfuck", "assgoblin", "asshead", "asslicker", "assmunch",
+    "assnugget", "asspirate", "assrammer", "assbang", "assblaster", "assburger", "asscheek",
+    "asscock", "asscunt", "assdick", "assface", "assfaggot", "arselicker", "butthole",
+    "butthurt", "buttfuck", "buttfucker", "knobhead", "knob head", "knobber", "bellend",
+    "bell end", "bellendface", "twat", "twats", "twatface", "twatwaffle", "wanker", "wankers",
+    "wank", "wanked", "wanking", "jerk off", "jerking off", "jack off", "jizz", "jizzed",
+    "jizzface", "jizzstain", "boner", "hardon", "hard on", "nudes", "nude", "naked",
+    "naked pics", "nakedpics", "nudity", "sex", "sexy", "seks", "sexytime", "sexchat",
+    "sexting", "sextape", "sex tape", "porn", "porno", "pornos", "pornhub", "porntube",
+    "xvideos", "xnxx", "redtube", "youporn", "pornstar", "porn stars", "pornsite", "onlyfans",
+    "only fans", "fansly", "hentai", "hentaihub", "gonewild", "gone wild", "futanari",
+    "futa", "loli", "lolicon", "shotacon", "shota", "pedo", "pedos", "pedophile", "pedophiles",
+    "paedophile", "pederast", "nonce", "nonces", "child predator", "childpredator",
+    "child molester", "child porn", "cp lover", "jailbait", "nude teens", "underage porn",
+    "teen porn", "kid porn", "incest", "cuckold", "cuck", "cuckquean", "milf", "gilf",
+    "hooker", "hookers", "tits", "titties", "tittie", "titty", "tittysucker", "titfuck",
+    "titsucker", "boobs", "boobies", "boob job", "boobjob", "boobie", "boob tube",
+    "masturbate", "masturbating", "masturbation", "cumming", "cumshot", "cum shot",
+    "rape", "raped", "raping", "rapist", "rapists", "rapefuck", "rapeslut", "date rape",
+    "gang rape", "rape victim blame", "kill yourself", "kill urself", "killyourself",
+    "kill yourself please", "please kill yourself", "go kill yourself", "gokillyourself",
+    "kys", "kms", "kyslmao", "end yourself", "endyourself", "off yourself", "offyourself",
+    "neck yourself", "neckyourself", "rope yourself", "ropeyourself", "hang yourself",
+    "hangyourself", "jump off a bridge", "jump off a cliff", "throw yourself off",
+    "throw yourself in front of a train", "slit your wrists", "slit your throat",
+    "cut yourself", "cutyourself", "self harm", "selfharm", "self-harm", "self delete",
+    "selfdelete", "delete yourself", "deleteyourself", "uninstall life", "commit suicide",
+    "commitsuicide", "you should die", "you should just die", "you deserve to die",
+    "die in a fire", "burn in hell", "rot in hell", "go die", "go die in a hole",
+    "die in a hole", "die", "go kys", "kys yourself", "noose yourself", "nooseyourself",
+    "suicide", "suicidal", "unlive", "nazi", "nazis", "nazi scum", "nazifag", "hitler",
+    "hitler lover", "hitler cunt", "heil hitler", "heilhitler", "sieg heil", "siegheil",
+    "white power", "whitepower", "white supremacist", "1488", "14 88", "kkk",
+    "ku klux klan", "klansman", "stormfront", "holohoax", "hoaxocaust", "auschwitz party",
+    "final solution", "german reich", "heil", "hail hitler", "bhenchod", "madarchod",
+    "bhosdike", "chutiya", "chut", "gaand", "gandu", "haramzada", "randi", "rand",
+    "lund", "bhadwa", "bhen ke", "orospu", "yarrak", "sikik", "puto", "puta", "maricon",
+    "pendejo", "cabron", "chingada", "verga", "pinche", "hijo de puta", "zorra",
+    "imposter whore", "wind up whore", "fuck you", "bastard", "bastards", "bastardfuck",
+    "dumbass", "dumbasses", "dumbfuck", "dumbassfuck", "jackass", "jackasses", "jackassfuck",
+    "cum", "cums", "cumfuck", "shut the fuck up", "shut up retard",
+    "stfu", "gtfo", "retard alert", "r slur", "t slur", "f slur", "n slur",
 ]
 LEET_CHARS = {
     "i": "1!|i",
@@ -172,6 +318,12 @@ def save_config():
     data = {
         "channel_raid_protection": channel_raid_protection,
         "spam_detection": spam_detection,
+        "spam_window": spam_window,
+        "spam_count": spam_count,
+        "spam_mute_minutes": spam_mute_minutes,
+        "spam_ban_offenses": spam_ban_offenses,
+        "raid_slowmode": RAID_SLOWMODE,
+        "ai_channel_id": AI_CHANNEL_ID,
         "antibot": antibot,
         "badwords_filter": badwords_filter,
         "antilink": antilink,
@@ -189,6 +341,8 @@ def save_config():
 
 def load_config():
     global channel_raid_protection, spam_detection, antibot, badwords_filter, antilink
+    global spam_window, spam_count, spam_mute_minutes, spam_ban_offenses, RAID_SLOWMODE
+    global AI_CHANNEL_ID
     global WELCOME_ROLE_ID, AUTO_RESPONSES, LINK_WHITELIST, WHITELIST_USER_IDS, WHITELIST_ROLE_IDS
     global ROOM_INACTIVE_DAYS, audit_channel_id
     if not os.path.exists(CONFIG_FILE):
@@ -197,6 +351,12 @@ def load_config():
         data = json.load(f)
     channel_raid_protection = data.get("channel_raid_protection", True)
     spam_detection = data.get("spam_detection", True)
+    spam_window = data.get("spam_window", 5)
+    spam_count = data.get("spam_count", 5)
+    spam_mute_minutes = data.get("spam_mute_minutes", 10)
+    spam_ban_offenses = data.get("spam_ban_offenses", 3)
+    RAID_SLOWMODE = data.get("raid_slowmode", 0)
+    AI_CHANNEL_ID = data.get("ai_channel_id")
     antibot = data.get("antibot", True)
     badwords_filter = data.get("badwords_filter", True)
     antilink = data.get("antilink", True)
@@ -296,6 +456,14 @@ async def unlock_guild(guild):
     locked_channels = []
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
+    for channel_id, delay in RAID_SLOWMODE_SAVED.items():
+        channel = guild.get_channel(channel_id)
+        if channel is not None:
+            try:
+                await channel.edit(slowmode_delay=delay, reason="Raid lockdown lifted")
+            except discord.HTTPException:
+                pass
+    RAID_SLOWMODE_SAVED.clear()
     try:
         await guild.edit(verification_level=discord.VerificationLevel.low, reason="Raid lockdown lifted")
     except discord.HTTPException:
@@ -308,6 +476,14 @@ async def trigger_raid(guild, reason):
     await announce(guild, f":rotating_light: **RAID DETECTED** ({reason}). Locking down the server. New joins will be kicked until it is safe.")
     await audit(guild, f":rotating_light: RAID triggered: {reason}")
     await lockdown_guild(guild)
+    if RAID_SLOWMODE > 0:
+        for ch in guild.text_channels:
+            try:
+                if ch.slowmode_delay != RAID_SLOWMODE:
+                    RAID_SLOWMODE_SAVED[ch.id] = ch.slowmode_delay
+                    await ch.edit(slowmode_delay=RAID_SLOWMODE, reason="Raid lockdown slowmode")
+            except discord.HTTPException:
+                pass
 
 
 def serialize_overwrites(channel):
@@ -688,15 +864,21 @@ async def on_message(message):
             now = time.monotonic()
             log = MESSAGE_LOG[message.author.id]
             log.append(now)
-            fresh = [t for t in log if now - t <= SPAM_WINDOW]
+            fresh = [t for t in log if now - t <= spam_window]
             MESSAGE_LOG[message.author.id] = deque(fresh, maxlen=100)
-            if len(fresh) >= SPAM_COUNT and message.guild.me.guild_permissions.moderate_members:
+            if len(fresh) >= spam_count and message.guild.me.guild_permissions.moderate_members:
+                SPAM_OFFENSES[message.author.id] += 1
                 try:
-                    await message.author.timeout(
-                        discord.utils.utcnow() + datetime.timedelta(minutes=10),
-                        reason="Spam detection",
-                    )
-                    await message.channel.send(f":mute: **{message.author}** muted for spamming.")
+                    if spam_ban_offenses > 0 and SPAM_OFFENSES[message.author.id] >= spam_ban_offenses:
+                        await message.author.ban(reason=f"Repeated spam ({SPAM_OFFENSES[message.author.id]} offenses)")
+                        await message.channel.send(f":hammer: **{message.author}** banned for repeated spam.")
+                        await audit(message.guild, f":hammer: **{message.author}** banned for repeated spam ({SPAM_OFFENSES[message.author.id]} offenses)")
+                    else:
+                        await message.author.timeout(
+                            discord.utils.utcnow() + datetime.timedelta(minutes=spam_mute_minutes),
+                            reason="Spam detection",
+                        )
+                        await message.channel.send(f":mute: **{message.author}** muted for spamming.")
                 except discord.HTTPException:
                     pass
 
@@ -989,6 +1171,43 @@ async def spamdetectoff_cmd(interaction: discord.Interaction):
     global spam_detection
     spam_detection = False
     await interaction.response.send_message("Spam detection **OFF**.", ephemeral=True)
+
+
+@bot.tree.command(name="spamsettings", description="Configure spam detection")
+@is_trusted()
+async def spamsettings_cmd(
+    interaction: discord.Interaction,
+    count: app_commands.Range[int, 1, 50] = None,
+    window: app_commands.Range[int, 1, 300] = None,
+    mute_minutes: app_commands.Range[int, 1, 10080] = None,
+    ban_offenses: app_commands.Range[int, 0, 10] = None,
+):
+    global spam_count, spam_window, spam_mute_minutes, spam_ban_offenses
+    if count is not None:
+        spam_count = count
+    if window is not None:
+        spam_window = window
+    if mute_minutes is not None:
+        spam_mute_minutes = mute_minutes
+    if ban_offenses is not None:
+        spam_ban_offenses = ban_offenses
+    save_config()
+    await interaction.response.send_message(
+        f"Spam settings: **{spam_count} msgs** in **{spam_window}s** -> mute **{spam_mute_minutes}min** | ban after **{spam_ban_offenses}** offenses (0 = never).",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="raidslowmode", description="Set channel slowmode applied during raid lockdown (0 = off)")
+@is_trusted()
+async def raidslowmode_cmd(interaction: discord.Interaction, seconds: app_commands.Range[int, 0, 21600]):
+    global RAID_SLOWMODE
+    RAID_SLOWMODE = seconds
+    save_config()
+    await interaction.response.send_message(
+        f"Raid slowmode set to **{seconds}s** (0 = off).",
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="antibot", description="Turn ON auto-kick of bots that join unapproved")
@@ -1320,7 +1539,9 @@ async def raidstatus(interaction: discord.Interaction):
     await interaction.response.send_message(
         f"Raid mode: {'**ACTIVE** - server locked' if raiding else 'off'}\n"
         f"Channel raid protection: {'**ON**' if channel_raid_protection else '**OFF**'}\n"
-        f"Spam detection: {'**ON**' if spam_detection else '**OFF**'}\n"
+        f"Spam detection: {'**ON**' if spam_detection else '**OFF**'} ({spam_count} msgs / {spam_window}s -> mute {spam_mute_minutes}min, ban after {spam_ban_offenses} offenses)\n"
+        f"Raid slowmode: {'**ON** (' + str(RAID_SLOWMODE) + 's)' if RAID_SLOWMODE else '**OFF**'}\n"
+        f"AI channel: {f'<#{AI_CHANNEL_ID}>' if AI_CHANNEL_ID else 'anywhere'}\n"
         f"Anti-bot: {'**ON**' if antibot else '**OFF**'}\n"
         f"Bad word filter: {'**ON**' if badwords_filter else '**OFF**'}\n"
         f"Anti-link: {'**ON**' if antilink else '**OFF**'}\n"
@@ -1375,6 +1596,13 @@ async def ai_generate(prompt, user_id):
 
 @bot.tree.command(name="ai", description="Ask the AI assistant anything")
 async def ai_cmd(interaction: discord.Interaction, message: str):
+    if AI_CHANNEL_ID and interaction.channel_id != AI_CHANNEL_ID and not is_whitelisted(interaction.user):
+        chan = interaction.guild.get_channel(AI_CHANNEL_ID) if interaction.guild else None
+        await interaction.response.send_message(
+            f"/ai can only be used in {chan.mention if chan else f'<#{AI_CHANNEL_ID}>'}.",
+            ephemeral=True,
+        )
+        return
     if not is_whitelisted(interaction.user):
         now = time.monotonic()
         log = AI_USAGE[interaction.user.id]
@@ -1398,6 +1626,24 @@ async def aichat_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(
         "AI chat mode is **disabled** for now.", ephemeral=True
     )
+
+
+setup_group = app_commands.Group(name="setup", description="Server setup commands")
+
+
+@setup_group.command(name="ai", description="Restrict /ai to a specific channel (no channel = anywhere)")
+@is_trusted()
+async def setup_ai(interaction: discord.Interaction, channel: discord.TextChannel = None):
+    global AI_CHANNEL_ID
+    AI_CHANNEL_ID = channel.id if channel else None
+    save_config()
+    if channel:
+        await interaction.response.send_message(f"/ai is now restricted to {channel.mention}.", ephemeral=True)
+    else:
+        await interaction.response.send_message("/ai can be used in any channel now.", ephemeral=True)
+
+
+bot.tree.add_command(setup_group)
 
 
 @bot.tree.error
