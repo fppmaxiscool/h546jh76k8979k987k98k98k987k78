@@ -1561,6 +1561,8 @@ def fit(text, limit=1990):
 async def ai_generate(prompt, user_id):
     if not AI_ENABLED:
         return "AI is not set up yet. The owner needs to add an `AI_API_KEY` to the bot environment."
+    if re.search(r"@(?:everyone|here)", prompt, re.IGNORECASE):
+        return "No - I'm not going to ping @everyone or @here."
     memory = AI_MEMORY.setdefault(user_id, deque(maxlen=12))
     messages = [
         {"role": "system", "content": "You are a helpful assistant in a Discord server. Be friendly and concise."}
@@ -1589,6 +1591,7 @@ async def ai_generate(prompt, user_id):
     except Exception as e:
         print(f"AI error: {e}")
         return "AI is struggling right now, try again in a few seconds."
+    reply = reply.replace("@everyone", "everyone").replace("@here", "here")
     memory.append(("user", prompt))
     memory.append(("assistant", reply))
     return fit(reply)
