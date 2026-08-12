@@ -2486,6 +2486,160 @@ async def run_admin_tool(guild, name, args):
         except discord.HTTPException as e:
             return f"Purge failed: {e}"
         return f"Purged up to {count} messages from #{ch.name}."
+    if name == "send_dm":
+        member, err = resolve_member_arg(guild, args)
+        if err:
+            return err
+        text = (args.get("text") or "").strip()[:1900]
+        if not text:
+            return "Provide text."
+        try:
+            await member.send(scrub_mentions(text))
+        except discord.HTTPException as e:
+            return f"Failed to DM: {e}"
+        return f"DM'd **{member}** (id={member.id})."
+    if name == "create_thread":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        tname = (args.get("name") or "").strip()[:100]
+        if not tname:
+            return "Provide a thread name."
+        content = (args.get("text") or "").strip()[:1900] or None
+        try:
+            thread = await ch.create_thread(name=tname, auto_archive_duration=1440, content=content, reason="AI admin: create thread")
+        except discord.HTTPException as e:
+            return f"Failed to create thread: {e}"
+        return f"Created thread **#{thread.name}** (id={thread.id})."
+    if name == "delete_message":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        mid = (args.get("message_id") or "").strip()
+        try:
+            msg = await ch.fetch_message(int(mid))
+        except (discord.HTTPException, ValueError):
+            return f"Could not fetch message id={mid} in #{ch.name}."
+        await msg.delete(reason="AI admin: delete message")
+        return f"Deleted message id={mid} from #{ch.name}."
+    if name == "move_member":
+        member, err = resolve_member_arg(guild, args)
+        if err:
+            return err
+        vc = None
+        if args.get("channel_id"):
+            vc = guild.get_channel(int(str(args["channel_id"]).strip()))
+        elif args.get("channel_query"):
+            q = args["channel_query"].lower().strip()
+            vc = next((c for c in guild.voice_channels if q in c.name.lower()), None)
+        if not isinstance(vc, discord.VoiceChannel):
+            return "Provide a valid voice channel. Use list_channels to find one."
+        await member.move_to(vc, reason="AI admin: move member")
+        return f"Moved **{member}** to voice channel **{vc.name}**."
+    if name == "edit_channel":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        kwargs = {}
+        if args.get("topic") is not None:
+            kwargs["topic"] = (args.get("topic") or "").strip()[:1024]
+        if args.get("nsfw") is not None:
+            kwargs["nsfw"] = bool(args.get("nsfw"))
+        if not kwargs:
+            return "Provide a topic or an nsfw flag."
+        await ch.edit(**kwargs, reason="AI admin: edit channel")
+        return f"Edited #{ch.name}: {', '.join(f'{k}={v!r}' for k, v in kwargs.items())}."
+    if name == "edit_server":
+        kwargs = {}
+        if args.get("name"):
+            kwargs["name"] = (args.get("name") or "").strip()[:100]
+        if args.get("description") is not None:
+            kwargs["description"] = (args.get("description") or "").strip()[:1024] or None
+        if not kwargs:
+            return "Provide a name or description."
+        await guild.edit(**kwargs, reason="AI admin: edit server")
+        return f"Updated server: {', '.join(f'{k}={v!r}' for k, v in kwargs.items())}."
+    if name == "create_emoji":
+        ename = (args.get("name") or "").strip()[:32]
+        url = (args.get("image_url") or "").strip()
+        if not ename or not url:
+            return "Provide a name and image_url."
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as s:
+                async with s.get(url) as r:
+                    data = await r.read()
+            emoji = await guild.create_custom_emoji(name=ename, image=data, reason="AI admin: create emoji")
+        except (discord.HTTPException, ValueError, OSError, aiohttp.ClientError) as e:
+            return f"Failed to create emoji: {e}"
+        return f"Created emoji :{emoji.name}: (id={emoji.id})."
+    if name == "delete_emoji":
+        eid = (args.get("emoji_id") or "").strip()
+        if not eid:
+            return "Provide an emoji_id (emoji ids appear in create_emoji results or as <:name:id>)."
+        emoji = discord.utils.get(guild.emojis, id=int(eid))
+        if not emoji:
+            return f"No emoji with id={eid}."
+        await emoji.delete(reason="AI admin: delete emoji")
+        return f"Deleted emoji (id={eid})."
+    if name == "pin_message":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        mid = (args.get("message_id") or "").strip()
+        try:
+            msg = await ch.fetch_message(int(mid))
+            await msg.pin(reason="AI admin: pin message")
+        except (discord.HTTPException, ValueError) as e:
+            return f"Pin failed: {e}"
+        return f"Pinned message id={mid} in #{ch.name}."
+    if name == "unpin_message":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        mid = (args.get("message_id") or "").strip()
+        try:
+            msg = await ch.fetch_message(int(mid))
+            await msg.unpin(reason="AI admin: unpin message")
+        except (discord.HTTPException, ValueError) as e:
+            return f"Unpin failed: {e}"
+        return f"Unpinned message id={mid} in #{ch.name}."
+    if name == "react_to_message":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        mid = (args.get("message_id") or "").strip()
+        emoji = (args.get("emoji") or "").strip()
+        if not mid or not emoji:
+            return "Provide a message_id and emoji (raw text like '🔥' or custom like <:name:id>)."
+        try:
+            msg = await ch.fetch_message(int(mid))
+            await msg.add_reaction(emoji)
+        except (discord.HTTPException, ValueError) as e:
+            return f"Reaction failed: {e}"
+        return f"Added {emoji} to message id={mid}."
+    if name == "list_threads":
+        threads = guild.threads
+        if not threads:
+            return "No active threads."
+        lines = [
+            f"- id={t.id} | #{t.name} | parent: #{t.parent.name if t.parent else 'none'} | members: {len(t.members)}"
+            for t in threads[:40]
+        ]
+        return "Active threads:\n" + "\n".join(lines)
+    if name == "audit_log":
+        count = max(1, min(int(args.get("count") or 10), 25))
+        try:
+            entries = [e async for e in guild.audit_logs(limit=count)]
+        except discord.HTTPException as e:
+            return f"Could not read audit log: {e}"
+        if not entries:
+            return "No audit log entries."
+        lines = [
+            f"[{e.created_at.strftime('%m-%d %H:%M')}] {e.user.name if e.user else 'unknown'}: {e.action} -> {getattr(e.target, 'name', e.target)} {f'| {e.reason}' if e.reason else ''}"
+            for e in entries
+        ]
+        return "Recent audit log:\n" + "\n".join(lines)
     if name == "set_nickname":
         member, err = resolve_member_arg(guild, args)
         if err:
@@ -3007,6 +3161,204 @@ ADMIN_TOOLS = [
                     "nickname": {"type": "string"},
                 },
                 "required": ["nickname"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_dm",
+            "description": "Send a DM to a member (any member, including the owner).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Member name as alternative to member_id"},
+                    "text": {"type": "string", "description": "DM content"},
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_thread",
+            "description": "Create a thread in a text channel, optionally with a start message.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "name": {"type": "string"},
+                    "text": {"type": "string", "description": "Optional first message"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_message",
+            "description": "Delete a specific message in a channel by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "message_id": {"type": "string"},
+                },
+                "required": ["channel_id", "message_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "move_member",
+            "description": "Move a member into a voice channel.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Member name as alternative to member_id"},
+                    "channel_id": {"type": "string"},
+                    "channel_query": {"type": "string", "description": "Voice channel name as alternative"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_channel",
+            "description": "Edit a channel's topic or nsfw flag.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "topic": {"type": "string", "description": "New topic (empty string clears it)"},
+                    "nsfw": {"type": "boolean"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_server",
+            "description": "Edit the server name or description.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string", "description": "Server description (empty string clears it)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_emoji",
+            "description": "Create a custom server emoji from an image URL.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "image_url": {"type": "string"},
+                },
+                "required": ["name", "image_url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_emoji",
+            "description": "Delete a custom server emoji by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "emoji_id": {"type": "string"},
+                },
+                "required": ["emoji_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pin_message",
+            "description": "Pin a message in a channel by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "message_id": {"type": "string"},
+                },
+                "required": ["channel_id", "message_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "unpin_message",
+            "description": "Unpin a message in a channel by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "message_id": {"type": "string"},
+                },
+                "required": ["channel_id", "message_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "react_to_message",
+            "description": "Add a reaction to a message (raw emoji like '🔥' or custom like <:name:id>).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "message_id": {"type": "string"},
+                    "emoji": {"type": "string"},
+                },
+                "required": ["channel_id", "message_id", "emoji"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_threads",
+            "description": "List all active threads in the server.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "audit_log",
+            "description": "Read recent server audit log entries (mod actions by everyone).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "count": {"type": "integer", "description": "How many entries (max 25)"},
+                },
+                "required": [],
             },
         },
     },
