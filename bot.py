@@ -38,6 +38,7 @@ AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
 AI_MODEL = os.getenv("AI_MODEL", "deepseek-chat").strip()
 AI_ENABLED = bool(AI_API_KEY)
 AI_MEMORY = {}
+AI_ADMIN_MEMORY = defaultdict(lambda: deque(maxlen=12))
 AI_CHANNEL_ID = None
 
 intents = discord.Intents.default()
@@ -1558,6 +1559,27 @@ def fit(text, limit=1990):
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
+async def ai_call(messages, tools=None):
+    payload = {"model": AI_MODEL, "messages": messages, "max_tokens": 700, "temperature": 0.7}
+    if tools:
+        payload["tools"] = tools
+    headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"}
+    try:
+        async with bot.ai_session.post(
+            "https://api.deepseek.com/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=60),
+        ) as resp:
+            data = await resp.json()
+            if resp.status != 200:
+                return f"AI error: {data.get('error', {}).get('message', resp.status)}"
+            return data["choices"][0]["message"]
+    except Exception as e:
+        print(f"AI error: {e}")
+        return "AI is struggling right now, try again in a few seconds."
+
+
 async def ai_generate(prompt, user_id):
     if not AI_ENABLED:
         return "AI is not set up yet. The owner needs to add an `AI_API_KEY` to the bot environment."
@@ -1570,39 +1592,250 @@ async def ai_generate(prompt, user_id):
     for role, text in memory:
         messages.append({"role": role, "content": text})
     messages.append({"role": "user", "content": prompt})
-    payload = {
-        "model": AI_MODEL,
-        "messages": messages,
-        "max_tokens": 600,
-        "temperature": 0.7,
-    }
-    headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"}
-    try:
-        async with bot.ai_session.post(
-            "https://api.deepseek.com/chat/completions",
-            json=payload,
-            headers=headers,
-            timeout=aiohttp.ClientTimeout(total=45),
-        ) as resp:
-            data = await resp.json()
-            if resp.status != 200:
-                return f"AI error: {data.get('error', {}).get('message', resp.status)}"
-            reply = data["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        print(f"AI error: {e}")
-        return "AI is struggling right now, try again in a few seconds."
+    data = await ai_call(messages)
+    if isinstance(data, str):
+        return data
+    reply = (data.get("content") or "").strip()
     reply = reply.replace("@everyone", "everyone").replace("@here", "here")
     memory.append(("user", prompt))
     memory.append(("assistant", reply))
     return fit(reply)
 
 
-@bot.tree.command(name="ai", description="Ask the AI assistant anything")
-async def ai_cmd(interaction: discord.Interaction, message: str):
+ADMIN_SYSTEM = (
+    "You are the moderation assistant for this Discord server, working for the server owner's team. "
+    "You have tools to view server data and moderate members (ban, kick, timeout, unban). "
+    "Use search_members to find a member's exact user id before moderating them. "
+    "The owner, the bot itself, admins and whitelisted staff are protected - the tools refuse those, respect that. "
+    "Never use @everyone or @here. Keep replies short and state clearly what you did."
+)
+
+
+def admin_resolve_member(guild, member_id, query):
+    tid = (member_id or "").strip()
+    if tid:
+        try:
+            member = guild.get_member(int(tid))
+            if member:
+                return member
+        except ValueError:
+            pass
+    q = (query or tid).lower().strip()
+    if not q:
+        return None
+    matches = [
+        m for m in guild.members
+        if m.name.lower() == q or m.display_name.lower() == q or str(m.id) == q
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        return "AMBIGUOUS"
+    return None
+
+
+def admin_protected(member):
+    return member.id == OWNER_ID or member.id == bot.user.id or is_whitelisted(member)
+
+
+async def run_admin_tool(guild, name, args):
+    if name == "search_members":
+        q = (args.get("query") or "").lower().strip()
+        if not q:
+            return "Provide a query."
+        matches = [m for m in guild.members if q in m.name.lower() or q in (m.display_name or m.name).lower() or q == str(m.id)]
+        if not matches:
+            return "No members found."
+        lines = [
+            f"- id={m.id} | {m.name} | display: {m.display_name} | bot: {m.bot}"
+            for m in matches[:10]
+        ]
+        if len(matches) > 10:
+            lines.append(f"... and {len(matches) - 10} more")
+        return "\n".join(lines)
+    if name == "list_channels":
+        lines = [
+            f"- id={c.id} | #{c.name} | {str(c.type).split('.')[-1]}"
+            for c in guild.channels[:40]
+        ]
+        return "\n".join(lines) or "No channels."
+    if name == "server_stats":
+        bots = sum(1 for m in guild.members if m.bot)
+        return (
+            f"Members: {guild.member_count} (bots: {bots})\n"
+            f"Text channels: {len(guild.text_channels)} | Voice: {len(guild.voice_channels)} | Categories: {len(guild.categories)}\n"
+            f"Roles: {len(guild.roles)} | Boosts: {guild.premium_subscription_count}\n"
+            f"Owner: {guild.owner} (id={guild.owner_id})"
+        )
+    if name == "unban_member":
+        mid = (args.get("member_id") or "").strip()
+        reason = (args.get("reason") or "AI admin action").strip()[:300]
+        try:
+            await guild.unban(discord.Object(id=int(mid)), reason=reason)
+            await audit(guild, f":unlock: AI admin unbanned user **{mid}** - {reason}")
+            return f"Unbanned user id={mid}."
+        except (discord.HTTPException, ValueError) as e:
+            return f"Unban failed: {e}"
+    member = admin_resolve_member(guild, args.get("member_id", ""), args.get("query"))
+    if member == "AMBIGUOUS":
+        return "Multiple members match - use search_members to get the exact user id."
+    if member is None:
+        return "Member not found - use search_members to get the exact user id."
+    if admin_protected(member):
+        return f"Refused: **{member}** is protected (owner/bot/admin/whitelisted)."
+    reason = (args.get("reason") or "AI admin action").strip()[:300]
+    if name == "ban_member":
+        await member.ban(reason=reason, delete_message_days=0)
+        await audit(guild, f":hammer: AI admin banned **{member} ({member.id})** - {reason}")
+        return f"Banned **{member}** (id={member.id}). Reason: {reason}"
+    if name == "kick_member":
+        await member.kick(reason=reason)
+        await audit(guild, f":boot: AI admin kicked **{member} ({member.id})** - {reason}")
+        return f"Kicked **{member}** (id={member.id}). Reason: {reason}"
+    if name == "timeout_member":
+        minutes = max(1, min(int(args.get("minutes") or 10), 10080))
+        await member.timeout(discord.utils.utcnow() + datetime.timedelta(minutes=minutes), reason=reason)
+        await audit(guild, f":mute: AI admin timed out **{member} ({member.id})** for {minutes}min - {reason}")
+        return f"Timed out **{member}** (id={member.id}) for {minutes} minutes. Reason: {reason}"
+    return "Unknown tool."
+
+
+async def ai_admin_generate(prompt, interaction):
+    if not AI_ENABLED:
+        return "AI is not set up yet. The owner needs to add an `AI_API_KEY` to the bot environment."
+    memory = AI_ADMIN_MEMORY[interaction.user.id]
+    messages = [{"role": "system", "content": ADMIN_SYSTEM}]
+    for role, text in memory:
+        messages.append({"role": role, "content": text})
+    messages.append({"role": "user", "content": prompt})
+    for _ in range(6):
+        data = await ai_call(messages, tools=ADMIN_TOOLS)
+        if isinstance(data, str):
+            return data
+        if data.get("tool_calls"):
+            messages.append({"role": "assistant", "content": data.get("content") or "", "tool_calls": data["tool_calls"]})
+            for tc in data["tool_calls"]:
+                fname = tc["function"]["name"]
+                try:
+                    targs = json.loads(tc["function"]["arguments"] or "{}")
+                except json.JSONDecodeError:
+                    targs = {}
+                try:
+                    result = await run_admin_tool(interaction.guild, fname, targs)
+                except discord.HTTPException as e:
+                    result = f"Discord error: {e}"
+                messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+            continue
+        reply = (data.get("content") or "Done.").strip()
+        reply = reply.replace("@everyone", "everyone").replace("@here", "here")
+        memory.append(("user", prompt))
+        memory.append(("assistant", reply))
+        return fit(reply)
+    return "That required too many steps - I stopped. Try a simpler request."
+
+
+ADMIN_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_members",
+            "description": "Search server members by name (or id) to find their exact user id.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "Name or id to search"}},
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_channels",
+            "description": "List all channels in the server with their ids.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "server_stats",
+            "description": "Get server statistics: member count, channel count, roles, boosts.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ban_member",
+            "description": "Ban a member by user id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member_id": {"type": "string", "description": "User id from search_members"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["member_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "unban_member",
+            "description": "Unban a user by their user id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["member_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "kick_member",
+            "description": "Kick a member by user id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["member_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "timeout_member",
+            "description": "Timeout (mute) a member for a number of minutes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member_id": {"type": "string"},
+                    "minutes": {"type": "integer", "minimum": 1, "maximum": 10080},
+                    "reason": {"type": "string"},
+                },
+                "required": ["member_id", "minutes"],
+            },
+        },
+    },
+]
+
+
+ai_group = app_commands.Group(name="ai", description="AI commands")
+
+
+@ai_group.command(name="chat", description="Ask the AI assistant anything")
+async def ai_chat_cmd(interaction: discord.Interaction, message: str):
     if AI_CHANNEL_ID and interaction.channel_id != AI_CHANNEL_ID and not is_whitelisted(interaction.user):
         chan = interaction.guild.get_channel(AI_CHANNEL_ID) if interaction.guild else None
         await interaction.response.send_message(
-            f"/ai can only be used in {chan.mention if chan else f'<#{AI_CHANNEL_ID}>'}.",
+            f"/ai chat can only be used in {chan.mention if chan else f'<#{AI_CHANNEL_ID}>'}.",
             ephemeral=True,
         )
         return
@@ -1614,13 +1847,24 @@ async def ai_cmd(interaction: discord.Interaction, message: str):
         AI_USAGE[interaction.user.id] = deque(fresh, maxlen=200)
         if len(fresh) > AI_LIMIT:
             await interaction.response.send_message(
-                f"You've reached the **{AI_LIMIT} /ai uses per hour** limit. Try again later.",
+                f"You've reached the **{AI_LIMIT} /ai chat uses per hour** limit. Try again later.",
                 ephemeral=True,
             )
             return
     await interaction.response.defer()
     reply = await ai_generate(message, interaction.user.id)
     await interaction.followup.send(reply)
+
+
+@ai_group.command(name="admin", description="AI admin: view members and moderate (ban/kick/timeout)")
+@is_trusted()
+async def ai_admin_cmd(interaction: discord.Interaction, message: str):
+    await interaction.response.defer()
+    reply = await ai_admin_generate(message, interaction)
+    await interaction.followup.send(reply)
+
+
+bot.tree.add_command(ai_group)
 
 
 @bot.tree.command(name="aichat", description="Turn chat mode ON for this channel")
