@@ -58,9 +58,9 @@ SPAM_WINDOW = 5
 SPAM_COUNT = 5
 MESSAGE_LOG = defaultdict(lambda: deque(maxlen=100))
 
-HOURLY_LIMIT = 10
-HOURLY_WINDOW = 3600
-HOURLY_LOG = defaultdict(lambda: deque(maxlen=200))
+AI_LIMIT = 10
+AI_WINDOW = 3600
+AI_USAGE = defaultdict(lambda: deque(maxlen=200))
 
 DISCORD_INVITE_RE = re.compile(
     r"(?:discord\.(?:gg|com|app|io|me|li|gift|new)/|discordapp\.com/invite/|dsc\.gg/|dis\.gg/|\b[\w-]+\.gg/)[^\s]*",
@@ -699,33 +699,6 @@ async def on_message(message):
                     await message.channel.send(f":mute: **{message.author}** muted for spamming.")
                 except discord.HTTPException:
                     pass
-
-        if content.strip():
-            now = time.monotonic()
-            hlog = HOURLY_LOG[message.author.id]
-            hlog.append(now)
-            fresh = [t for t in hlog if now - t <= HOURLY_WINDOW]
-            HOURLY_LOG[message.author.id] = deque(fresh, maxlen=200)
-            if len(fresh) > HOURLY_LIMIT:
-                try:
-                    await message.delete()
-                except discord.HTTPException:
-                    pass
-                try:
-                    await message.author.timeout(
-                        discord.utils.utcnow() + datetime.timedelta(hours=1),
-                        reason="10 messages/hour limit exceeded",
-                    )
-                    await message.channel.send(
-                        f":mute: **{message.author}** hit the **{HOURLY_LIMIT} messages/hour** limit - timed out for 1 hour.",
-                        delete_after=10,
-                    )
-                    await audit(message.guild, f":mute: **{message.author}** exceeded hourly limit ({len(fresh) - HOURLY_LIMIT} extra messages)")
-                except discord.HTTPException:
-                    await message.channel.send(
-                        f"{message.author.mention}, you've reached the **{HOURLY_LIMIT} messages/hour** limit.",
-                        delete_after=5,
-                    )
 
     for trigger, response in AUTO_RESPONSES.items():
         if trigger in content.lower():
@@ -1402,6 +1375,18 @@ async def ai_generate(prompt, user_id):
 
 @bot.tree.command(name="ai", description="Ask the AI assistant anything")
 async def ai_cmd(interaction: discord.Interaction, message: str):
+    if not is_whitelisted(interaction.user):
+        now = time.monotonic()
+        log = AI_USAGE[interaction.user.id]
+        log.append(now)
+        fresh = [t for t in log if now - t <= AI_WINDOW]
+        AI_USAGE[interaction.user.id] = deque(fresh, maxlen=200)
+        if len(fresh) > AI_LIMIT:
+            await interaction.response.send_message(
+                f"You've reached the **{AI_LIMIT} /ai uses per hour** limit. Try again later.",
+                ephemeral=True,
+            )
+            return
     await interaction.response.defer()
     reply = await ai_generate(message, interaction.user.id)
     await interaction.followup.send(reply)
