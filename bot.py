@@ -2213,7 +2213,7 @@ async def run_admin_tool(guild, name, args):
     if name == "list_channels":
         lines = [
             f"- id={c.id} | #{c.name} | {str(c.type).split('.')[-1]}"
-            for c in guild.channels[:40]
+            for c in sorted(guild.channels, key=lambda c: (c.category_id or 0, c.position))
         ]
         return "\n".join(lines) or "No channels."
     if name == "read_messages":
