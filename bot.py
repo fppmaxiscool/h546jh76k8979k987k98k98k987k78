@@ -283,11 +283,13 @@ TICKET_MEMBER_PERMS = dict(
 AUDIT_CHANNEL_NAME = "bot-logs"
 BACKUP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot-backup.json")
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot-config.json")
+STATS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot-stats.json")
 ROOM_INACTIVE_DAYS = 14
 CLEANUP_INTERVAL = 12 * 3600
 
 raiding = False
 locked_channels = []
+MESSAGE_STATS = defaultdict(int)
 channel_raid_protection = True
 spam_detection = True
 antibot = True
@@ -311,6 +313,31 @@ def is_whitelisted(member):
     if member.id == OWNER_ID or member.id in WHITELIST_USER_IDS:
         return True
     return any(r.id in WHITELIST_ROLE_IDS for r in member.roles)
+
+
+def save_stats():
+    try:
+        with open(STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(dict(MESSAGE_STATS), f)
+    except OSError:
+        pass
+
+
+def load_stats():
+    try:
+        with open(STATS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for k, v in data.items():
+            if ":" in k:
+                MESSAGE_STATS[k] = int(v)
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+
+
+async def stats_save_loop():
+    while True:
+        await asyncio.sleep(300)
+        save_stats()
 
 
 def save_config():
@@ -746,6 +773,7 @@ async def room_cleanup_loop():
 async def on_ready():
     if load_config():
         print("Loaded config from bot-config.json")
+    load_stats()
     for gid in (1536762391851696199, 1521614024587083908):
         guild = discord.Object(id=gid)
         bot.tree.copy_global_to(guild=guild)
@@ -753,12 +781,14 @@ async def on_ready():
     bot.tree.clear_commands(guild=None)
     await bot.tree.sync()
     bot.loop.create_task(room_cleanup_loop())
+    bot.loop.create_task(stats_save_loop())
     bot.ai_session = aiohttp.ClientSession()
     print(f"Logged in as {bot.user} ({bot.user.id}) - slash commands synced")
 
 
 @bot.event
 async def on_close():
+    save_stats()
     try:
         await bot.ai_session.close()
     except Exception:
@@ -829,6 +859,7 @@ async def on_guild_channel_create(channel):
 async def on_message(message):
     if message.author.bot or not message.guild:
         return
+    MESSAGE_STATS[f"{message.guild.id}:{message.author.id}"] += 1
 
     content = message.content
 
@@ -1760,8 +1791,40 @@ async def run_admin_tool(guild, name, args):
             f"Joined: {member.joined_at.strftime('%Y-%m-%d') if member.joined_at else 'unknown'}\n"
             f"Timeout: {timeout}\n"
             f"Booster: {premium}\n"
+            f"Messages sent: {MESSAGE_STATS.get(f'{guild.id}:{member.id}', 0)}\n"
             f"Roles: {roles or 'none'}"
         )
+    if name == "list_role_members":
+        target, err = resolve_role(guild, args.get("role_id"), args.get("query"))
+        if err:
+            return err
+        holders = [m for m in target.members if not m.bot]
+        if not holders:
+            return f"No members currently hold the role **{target.name}**."
+        lines = [f"- {m.name} (id={m.id}, display: {m.display_name})" for m in holders[:30]]
+        if len(holders) > 30:
+            lines.append(f"... and {len(holders) - 30} more")
+        return f"Members holding role **{target.name}** ({len(holders)}):\n" + "\n".join(lines)
+    if name == "message_counts":
+        top = max(1, min(int(args.get("top") or 10), 50))
+        if args.get("member_id") or args.get("query"):
+            member, err = resolve_member_arg(guild, args)
+            if err:
+                return err
+            return f"**{member}** has sent **{MESSAGE_STATS.get(f'{guild.id}:{member.id}', 0)}** messages."
+        entries = []
+        prefix = f"{guild.id}:"
+        for k, v in MESSAGE_STATS.items():
+            if k.startswith(prefix):
+                mid = int(k.split(":", 1)[1])
+                m = guild.get_member(mid)
+                if m:
+                    entries.append((v, m))
+        entries.sort(reverse=True)
+        if not entries:
+            return "No message stats recorded yet."
+        lines = [f"{i}. {m.name} (id={m.id}): {n} msgs" for i, (n, m) in enumerate(entries[:top], 1)]
+        return "Top members by messages sent:\n" + "\n".join(lines)
     if name == "list_timeouts":
         timed_out = [m for m in guild.members if m.is_timed_out()]
         if not timed_out:
@@ -2097,6 +2160,37 @@ ADMIN_TOOLS = [
                 "properties": {
                     "member_id": {"type": "string"},
                     "query": {"type": "string", "description": "Member name as alternative to member_id"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_role_members",
+            "description": "List all members currently holding a role (by role id or name).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Role name as alternative to role_id"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "message_counts",
+            "description": "Message counts per member. Pass top for the leaderboard, or member_id/query for one member. Counts everything since the bot started (persisted).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Member name as alternative to member_id"},
+                    "top": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Show top N by message count"},
                 },
                 "required": [],
             },
