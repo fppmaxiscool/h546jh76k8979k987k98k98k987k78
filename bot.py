@@ -754,9 +754,15 @@ async def on_message(message):
         async with message.channel.typing():
             text, err = await ai_generate(content, message.channel.id)
         if err:
-            await message.channel.send(f":warning: AI error: {fit(err, 300)}")
+            try:
+                await message.reply(f":warning: AI error: {fit(err, 300)}")
+            except discord.HTTPException:
+                pass
         else:
-            await message.channel.send(fit(text))
+            try:
+                await message.reply(fit(text))
+            except discord.HTTPException:
+                pass
 
 
 @bot.tree.command(name="room", description="Create a private channel only for specific people")
