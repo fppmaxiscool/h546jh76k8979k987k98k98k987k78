@@ -1604,9 +1604,12 @@ async def ai_generate(prompt, user_id):
 
 ADMIN_SYSTEM = (
     "You are the moderation assistant for this Discord server, working for the server owner's team. "
-    "You have tools to view server data and moderate members (ban, kick, timeout, unban). "
-    "Use search_members to find a member's exact user id before moderating them. "
-    "The owner, the bot itself, admins and whitelisted staff are protected - the tools refuse those, respect that. "
+    "You have tools to view server data and fully manage it: search members, list channels/roles/stats, "
+    "moderate members (ban, kick, timeout, unban, set nickname), manage roles (create, rename, delete, "
+    "grant/remove to members, set role permissions list_roles create_role rename_role delete_role set_role_permissions grant_role remove_role), "
+    "manage channels (create, rename, delete, set slowmode) and send or purge messages in channels. "
+    "Use search_members to find a member's exact user id and list_roles/list_channels for ids before acting on them. "
+    "The owner, the bot itself, admins and whitelisted staff are protected - tools refuse to moderate them, respect that. "
     "Never use @everyone or @here. Keep replies short and state clearly what you did."
 )
 
@@ -1638,6 +1641,74 @@ def admin_protected(member):
     return member.id == OWNER_ID or member.id == bot.user.id or is_whitelisted(member)
 
 
+def parse_color(value):
+    if not value:
+        return None
+    try:
+        return discord.Color(int(str(value).strip().lstrip("#"), 16))
+    except ValueError:
+        return None
+
+
+def parse_permissions(value):
+    valid = set(discord.Permissions.VALID_FLAGS)
+    names = [n.strip().lower() for n in str(value).split(",") if n.strip()]
+    return [n for n in names if n in valid], [n for n in names if n not in valid]
+
+
+def scrub_mentions(text):
+    return text.replace("@everyone", "everyone").replace("@here", "here").replace("<@&", "@")
+
+
+def resolve_member_arg(guild, args):
+    member = admin_resolve_member(guild, args.get("member_id", ""), args.get("query"))
+    if member == "AMBIGUOUS":
+        return None, "Multiple members match - use search_members to get the exact user id."
+    if member is None:
+        return None, "Member not found - use search_members to get the exact user id."
+    return member, None
+
+
+def resolve_role(guild, role_id, query):
+    tid = (role_id or "").strip()
+    if tid:
+        try:
+            role = guild.get_role(int(tid))
+            if role:
+                return role, None
+        except ValueError:
+            pass
+    q = (query or tid or "").lower().strip()
+    if not q:
+        return None, "Provide a role id or name."
+    matches = [r for r in guild.roles if r.name.lower() == q]
+    if len(matches) == 1:
+        return matches[0], None
+    if len(matches) > 1:
+        return None, "Multiple roles match - be more specific."
+    return None, "Role not found."
+
+
+def resolve_channel(guild, channel_id, query):
+    tid = (channel_id or "").strip()
+    if tid:
+        try:
+            channel = guild.get_channel_or_thread(int(tid))
+            if channel:
+                return channel, None
+        except ValueError:
+            pass
+    q = (query or tid or "").lower().strip()
+    if not q:
+        return None, "Provide a channel id or name."
+    matches = [c for c in guild.channels if c.name.lower() == q]
+    if len(matches) == 1:
+        return matches[0], None
+    if len(matches) > 1:
+        return None, "Multiple channels match - be more specific."
+    return None, "Channel not found."
+
+
 async def run_admin_tool(guild, name, args):
     if name == "search_members":
         q = (args.get("query") or "").lower().strip()
@@ -1667,6 +1738,160 @@ async def run_admin_tool(guild, name, args):
             f"Roles: {len(guild.roles)} | Boosts: {guild.premium_subscription_count}\n"
             f"Owner: {guild.owner} (id={guild.owner_id})"
         )
+    if name == "list_roles":
+        lines = [
+            f"- id={r.id} | {r.name} | color: #{r.color.value:06x} | hoist: {r.hoist} | mentionable: {r.mentionable}"
+            for r in sorted(guild.roles, key=lambda r: r.position, reverse=True)[:40]
+        ]
+        return "\n".join(lines) or "No roles."
+    if name == "create_role":
+        rname = (args.get("name") or "").strip()[:32]
+        if not rname:
+            return "Provide a role name."
+        try:
+            role = await guild.create_role(
+                name=rname,
+                color=parse_color(args.get("color")),
+                hoist=bool(args.get("hoist")),
+                mentionable=bool(args.get("mentionable")),
+                reason="AI admin: create role",
+            )
+        except discord.HTTPException as e:
+            return f"Failed to create role: {e}"
+        await audit(guild, f":label: AI admin created role **{role.name}** (id={role.id})")
+        return f"Created role **{role.name}** (id={role.id})."
+    if name == "rename_role":
+        target, err = resolve_role(guild, args.get("role_id"), args.get("query"))
+        if err:
+            return err
+        new = (args.get("name") or "").strip()[:32]
+        if not new:
+            return "Provide a new name."
+        await target.edit(name=new, reason="AI admin: rename role")
+        await audit(guild, f":label: AI admin renamed role (id={target.id}) to **{new}**")
+        return f"Renamed role (id={target.id}) to **{new}**."
+    if name == "delete_role":
+        target, err = resolve_role(guild, args.get("role_id"), args.get("query"))
+        if err:
+            return err
+        if target.is_default() or target.is_bot_managed() or target == guild.premium_subscriber_role:
+            return "Refused: cannot delete that role."
+        await target.delete(reason="AI admin: delete role")
+        await audit(guild, f":wastebasket: AI admin deleted role **{target.name}**")
+        return f"Deleted role **{target.name}**."
+    if name == "set_role_permissions":
+        target, err = resolve_role(guild, args.get("role_id"), args.get("query"))
+        if err:
+            return err
+        valid, invalid = parse_permissions(args.get("permissions") or "")
+        if not valid and invalid:
+            return f"Unknown permission names: {', '.join(invalid)}. Valid: {', '.join(sorted(discord.Permissions.VALID_FLAGS))}"
+        perms = target.permissions
+        for p in valid:
+            setattr(perms, p, True)
+        await target.edit(permissions=perms, reason="AI admin: set role permissions")
+        await audit(guild, f":shield: AI admin granted role **{target.name}** permissions: {', '.join(valid) or 'none'}")
+        return f"Granted {target.name}: {', '.join(valid) or 'no new permissions'}"
+    if name == "grant_role":
+        member, err = resolve_member_arg(guild, args)
+        if err:
+            return err
+        target, err2 = resolve_role(guild, args.get("role_id"), args.get("role_query"))
+        if err2:
+            return err2
+        await member.add_roles(target, reason="AI admin: grant role")
+        await audit(guild, f":label: AI admin gave **{member}** role **{target.name}**")
+        return f"Gave **{member}** the role **{target.name}**."
+    if name == "remove_role":
+        member, err = resolve_member_arg(guild, args)
+        if err:
+            return err
+        if admin_protected(member):
+            return f"Refused: **{member}** is protected (owner/bot/admin/whitelisted)."
+        target, err2 = resolve_role(guild, args.get("role_id"), args.get("role_query"))
+        if err2:
+            return err2
+        await member.remove_roles(target, reason="AI admin: remove role")
+        await audit(guild, f":label: AI admin removed **{target.name}** from **{member}**")
+        return f"Removed **{target.name}** from **{member}**."
+    if name == "create_channel":
+        cname = (args.get("name") or "").strip()[:32]
+        if not cname:
+            return "Provide a channel name."
+        ctype = (args.get("type") or "text").lower()
+        ct = {
+            "text": discord.ChannelType.text,
+            "voice": discord.ChannelType.voice,
+            "category": discord.ChannelType.category,
+        }.get(ctype)
+        if ct is None:
+            return "Channel type must be text, voice or category."
+        cat = None
+        if args.get("category"):
+            cat = next((c for c in guild.categories if c.name.lower() == args["category"].lower()), None)
+        try:
+            ch = await guild.create_channel(name=cname, channel_type=ct, category=cat, reason="AI admin: create channel")
+        except discord.HTTPException as e:
+            return f"Failed to create channel: {e}"
+        await audit(guild, f":construction: AI admin created channel **#{ch.name}** (id={ch.id})")
+        return f"Created channel **#{ch.name}** (id={ch.id})."
+    if name == "rename_channel":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        new = (args.get("name") or "").strip()[:32]
+        if not new:
+            return "Provide a new name."
+        await ch.edit(name=new, reason="AI admin: rename channel")
+        await audit(guild, f":construction: AI admin renamed #{ch.id} to **#{new}**")
+        return f"Renamed channel (id={ch.id}) to **#{new}**."
+    if name == "delete_channel":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        await ch.delete(reason="AI admin: delete channel")
+        await audit(guild, f":wastebasket: AI admin deleted channel **#{ch.name}**")
+        return f"Deleted channel **#{ch.name}**."
+    if name == "set_slowmode":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        seconds = max(0, min(int(args.get("seconds") or 0), 21600))
+        await ch.edit(slowmode_delay=seconds, reason="AI admin: set slowmode")
+        return f"Set slowmode of #{ch.name} to {seconds}s."
+    if name == "send_message":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        text = (args.get("text") or "").strip()[:1900]
+        if not text:
+            return "Provide text."
+        try:
+            await ch.send(scrub_mentions(text))
+        except discord.HTTPException as e:
+            return f"Failed to send: {e}"
+        await audit(guild, f":speech_balloon: AI admin sent a message in #{ch.name}")
+        return f"Sent the message in #{ch.name}."
+    if name == "purge_messages":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        count = max(1, min(int(args.get("count") or 5), 100))
+        try:
+            await ch.purge(limit=count, reason="AI admin: purge")
+        except discord.HTTPException as e:
+            return f"Purge failed: {e}"
+        return f"Purged up to {count} messages from #{ch.name}."
+    if name == "set_nickname":
+        member, err = resolve_member_arg(guild, args)
+        if err:
+            return err
+        if admin_protected(member):
+            return f"Refused: **{member}** is protected (owner/bot/admin/whitelisted)."
+        nick = (args.get("nickname") or "").strip()[:32]
+        await member.edit(nick=nick or None, reason="AI admin: set nickname")
+        await audit(guild, f":pencil: AI admin set **{member}**'s nickname to **{nick or 'none'}**")
+        return f"Set **{member}**'s nickname to **{nick or 'none'}**."
     if name == "unban_member":
         mid = (args.get("member_id") or "").strip()
         reason = (args.get("reason") or "AI admin action").strip()[:300]
@@ -1821,6 +2046,223 @@ ADMIN_TOOLS = [
                     "reason": {"type": "string"},
                 },
                 "required": ["member_id", "minutes"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_roles",
+            "description": "List all roles in the server with their ids, color and settings.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_role",
+            "description": "Create a new role.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "color": {"type": "string", "description": "Hex color like #FF0000"},
+                    "hoist": {"type": "boolean", "description": "Show role separately in member list"},
+                    "mentionable": {"type": "boolean"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rename_role",
+            "description": "Rename a role by id or name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Role name as alternative to role_id"},
+                    "name": {"type": "string"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_role",
+            "description": "Delete a role by id or name (protected roles are refused).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Role name as alternative to role_id"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_role_permissions",
+            "description": "Grant permissions to a role. Pass comma-separated permission names like 'manage_messages, kick_members, manage_channels'. Only grants, never removes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Role name as alternative to role_id"},
+                    "permissions": {"type": "string"},
+                },
+                "required": ["permissions"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "grant_role",
+            "description": "Grant a role to a member.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Member name as alternative to member_id"},
+                    "role_id": {"type": "string"},
+                    "role_query": {"type": "string", "description": "Role name as alternative to role_id"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_role",
+            "description": "Remove a role from a member (protected members are refused).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Member name as alternative to member_id"},
+                    "role_id": {"type": "string"},
+                    "role_query": {"type": "string", "description": "Role name as alternative to role_id"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_channel",
+            "description": "Create a text, voice or category channel.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "type": {"type": "string", "enum": ["text", "voice", "category"]},
+                    "category": {"type": "string", "description": "Category name to place it under"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rename_channel",
+            "description": "Rename a channel by id or name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "name": {"type": "string"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_channel",
+            "description": "Delete a channel by id or name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_slowmode",
+            "description": "Set slowmode (seconds between messages) on a text channel.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "seconds": {"type": "integer", "minimum": 0, "maximum": 21600},
+                },
+                "required": ["seconds"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_message",
+            "description": "Send a message in a text channel. @everyone/@here mentions are scrubbed by the tool.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "text": {"type": "string"},
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "purge_messages",
+            "description": "Delete the most recent N messages in a text channel (max 100).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "count": {"type": "integer", "minimum": 1, "maximum": 100},
+                },
+                "required": ["count"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_nickname",
+            "description": "Set a member's nickname (empty clears it). Protected members are refused.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Member name as alternative to member_id"},
+                    "nickname": {"type": "string"},
+                },
+                "required": ["nickname"],
             },
         },
     },
