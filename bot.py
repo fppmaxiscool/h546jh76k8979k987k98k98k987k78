@@ -1597,15 +1597,15 @@ async def ai_call(messages, tools=None):
             "https://api.deepseek.com/chat/completions",
             json=payload,
             headers=headers,
-            timeout=aiohttp.ClientTimeout(total=60),
+            timeout=aiohttp.ClientTimeout(total=120),
         ) as resp:
             data = await resp.json()
             if resp.status != 200:
                 return f"AI error: {data.get('error', {}).get('message', resp.status)}"
             return data["choices"][0]["message"]
     except Exception as e:
-        print(f"AI error: {e}")
-        return "AI is struggling right now, try again in a few seconds."
+        print(f"AI error: {type(e).__name__}: {e}")
+        return f"AI is struggling right now ({type(e).__name__}). Try again in a few seconds."
 
 
 async def ai_generate(prompt, user_id):
