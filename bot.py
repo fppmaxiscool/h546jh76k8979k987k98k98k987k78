@@ -566,8 +566,8 @@ def fit(text, limit=1900):
 SYSTEM_PROMPT = "You are a helpful assistant in a Discord server. Be concise, friendly, and use plain text. Keep replies reasonably short."
 
 
-async def ai_generate(prompt, channel_id):
-    history = AI_MEMORY.get(channel_id, deque(maxlen=12))
+async def ai_generate(prompt, user_id):
+    history = AI_MEMORY.get(user_id, deque(maxlen=12))
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages += [{"role": r, "content": t} for r, t in history]
     messages.append({"role": "user", "content": prompt})
@@ -596,7 +596,7 @@ async def ai_generate(prompt, channel_id):
             text = data["choices"][0]["message"]["content"]
     except Exception as e:
         return None, str(e)
-    AI_MEMORY[channel_id] = deque(list(history) + [("user", prompt), ("assistant", text)], maxlen=12)
+    AI_MEMORY[user_id] = deque(list(history) + [("user", prompt), ("assistant", text)], maxlen=12)
     return text, None
 
 
@@ -752,7 +752,7 @@ async def on_message(message):
 
     if AI_ENABLED and AI_CHANNEL_ID and message.channel.id == AI_CHANNEL_ID:
         async with message.channel.typing():
-            text, err = await ai_generate(content, message.channel.id)
+            text, err = await ai_generate(content, message.author.id)
         if err:
             try:
                 await message.reply(f":warning: AI error: {fit(err, 300)}")
@@ -1332,7 +1332,7 @@ async def ai(interaction: discord.Interaction, message: str):
         await interaction.response.send_message("AI isn't enabled. Ask an admin to set the AI_API_KEY variable.", ephemeral=True)
         return
     await interaction.response.defer()
-    text, err = await ai_generate(message, interaction.channel_id)
+    text, err = await ai_generate(message, interaction.user.id)
     if err:
         await interaction.followup.send(f":warning: AI error: {fit(err, 300)}")
     else:
