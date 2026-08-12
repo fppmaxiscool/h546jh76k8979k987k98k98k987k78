@@ -1605,6 +1605,8 @@ ADMIN_SYSTEM = (
     "moderate members (ban, kick, timeout, unban, set nickname), manage roles (create, rename, delete, "
     "grant/remove to members, set role permissions list_roles create_role rename_role delete_role set_role_permissions grant_role remove_role), "
     "manage channels (create, rename, delete, set slowmode) and send or purge messages in channels. "
+    "set_role_permissions can change ANY Discord permission including administrator and mention_everyone; "
+    "use '-' prefix to revoke a permission, bare or '+' to grant."
     "Use search_members to find a member's exact user id and list_roles/list_channels for ids before acting on them. "
     "The owner, the bot itself, admins and whitelisted staff are protected - tools refuse to moderate them, respect that. "
     "Never use @everyone or @here. Keep replies short and state clearly what you did."
@@ -1649,8 +1651,19 @@ def parse_color(value):
 
 def parse_permissions(value):
     valid = set(discord.Permissions.VALID_FLAGS)
-    names = [n.strip().lower() for n in str(value).split(",") if n.strip()]
-    return [n for n in names if n in valid], [n for n in names if n not in valid]
+    grant, revoke, invalid = [], [], []
+    for part in str(value).split(","):
+        p = part.strip().lower()
+        if not p:
+            continue
+        name = p[1:].strip() if p[0] in "+-" else p
+        if name not in valid:
+            invalid.append(name)
+        elif p.startswith("-"):
+            revoke.append(name)
+        else:
+            grant.append(name)
+    return grant, revoke, invalid
 
 
 def scrub_mentions(text):
@@ -1805,15 +1818,18 @@ async def run_admin_tool(guild, name, args):
         target, err = resolve_role(guild, args.get("role_id"), args.get("query"))
         if err:
             return err
-        valid, invalid = parse_permissions(args.get("permissions") or "")
-        if not valid and invalid:
+        grant, revoke, invalid = parse_permissions(args.get("permissions") or "")
+        if invalid and not grant and not revoke:
             return f"Unknown permission names: {', '.join(invalid)}. Valid: {', '.join(sorted(discord.Permissions.VALID_FLAGS))}"
         perms = target.permissions
-        for p in valid:
+        for p in grant:
             setattr(perms, p, True)
+        for p in revoke:
+            setattr(perms, p, False)
         await target.edit(permissions=perms, reason="AI admin: set role permissions")
-        await audit(guild, f":shield: AI admin granted role **{target.name}** permissions: {', '.join(valid) or 'none'}")
-        return f"Granted {target.name}: {', '.join(valid) or 'no new permissions'}"
+        changed = grant + [f"-{p}" for p in revoke]
+        await audit(guild, f":shield: AI admin changed role **{target.name}** permissions: {', '.join(changed) or 'no change'}")
+        return f"Updated {target.name} permissions. Granted: {', '.join(grant) or 'none'} | Removed: {', '.join(revoke) or 'none'}"
     if name == "grant_role":
         member, err = resolve_member_arg(guild, args)
         if err:
@@ -2154,13 +2170,14 @@ ADMIN_TOOLS = [
         "type": "function",
         "function": {
             "name": "set_role_permissions",
-            "description": "Grant permissions to a role. Pass comma-separated permission names like 'manage_messages, kick_members, manage_channels'. Only grants, never removes.",
+            "description": "Change role permissions. Pass comma-separated names; prefix '-' to remove. Every Discord permission is valid: "
+            + ", ".join(sorted(discord.Permissions.VALID_FLAGS)),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "role_id": {"type": "string"},
                     "query": {"type": "string", "description": "Role name as alternative to role_id"},
-                    "permissions": {"type": "string"},
+                    "permissions": {"type": "string", "description": "e.g. 'mention_everyone, manage_messages, -send_messages'"},
                 },
                 "required": ["permissions"],
             },
