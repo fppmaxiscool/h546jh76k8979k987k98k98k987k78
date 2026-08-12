@@ -7,6 +7,7 @@ import time
 from collections import defaultdict, deque
 from typing import Union
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -33,6 +34,11 @@ if not TOKEN:
 
 OWNER_ID = 847669208296063016
 
+AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
+AI_MODEL = os.getenv("AI_MODEL", "deepseek-chat").strip()
+AI_ENABLED = bool(AI_API_KEY)
+AI_MEMORY = {}
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -52,7 +58,10 @@ SPAM_WINDOW = 5
 SPAM_COUNT = 5
 MESSAGE_LOG = defaultdict(lambda: deque(maxlen=100))
 
-INVITE_RE = re.compile(r"(?:discord\.(?:gg|io|me|li)|discordapp\.com/invite)/[\w-]+")
+DISCORD_INVITE_RE = re.compile(
+    r"(?:discord\.(?:gg|com|app|io|me|li|gift|new)/|discordapp\.com/invite/|dsc\.gg/|dis\.gg/|\b[\w-]+\.gg/)[^\s]*",
+    re.IGNORECASE,
+)
 LINK_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 
 BAD_WORDS = [
@@ -130,7 +139,6 @@ raiding = False
 locked_channels = []
 channel_raid_protection = True
 spam_detection = True
-invite_filter = True
 antibot = True
 badwords_filter = True
 antilink = True
@@ -160,7 +168,6 @@ def save_config():
     data = {
         "channel_raid_protection": channel_raid_protection,
         "spam_detection": spam_detection,
-        "invite_filter": invite_filter,
         "antibot": antibot,
         "badwords_filter": badwords_filter,
         "antilink": antilink,
@@ -177,7 +184,7 @@ def save_config():
 
 
 def load_config():
-    global channel_raid_protection, spam_detection, invite_filter, antibot, badwords_filter, antilink
+    global channel_raid_protection, spam_detection, antibot, badwords_filter, antilink
     global WELCOME_ROLE_ID, AUTO_RESPONSES, LINK_WHITELIST, WHITELIST_USER_IDS, WHITELIST_ROLE_IDS
     global ROOM_INACTIVE_DAYS, audit_channel_id
     if not os.path.exists(CONFIG_FILE):
@@ -186,7 +193,6 @@ def load_config():
         data = json.load(f)
     channel_raid_protection = data.get("channel_raid_protection", True)
     spam_detection = data.get("spam_detection", True)
-    invite_filter = data.get("invite_filter", True)
     antibot = data.get("antibot", True)
     badwords_filter = data.get("badwords_filter", True)
     antilink = data.get("antilink", True)
@@ -568,7 +574,16 @@ async def on_ready():
     bot.tree.clear_commands(guild=None)
     await bot.tree.sync()
     bot.loop.create_task(room_cleanup_loop())
+    bot.ai_session = aiohttp.ClientSession()
     print(f"Logged in as {bot.user} ({bot.user.id}) - slash commands synced")
+
+
+@bot.event
+async def on_close():
+    try:
+        await bot.ai_session.close()
+    except Exception:
+        pass
 
 
 @bot.event
@@ -639,10 +654,10 @@ async def on_message(message):
     content = message.content
 
     if not is_whitelisted(message.author):
-        if invite_filter and INVITE_RE.search(content):
+        if DISCORD_INVITE_RE.search(content):
             try:
                 await message.delete()
-                await message.channel.send(f"{message.author.mention}, invites are not allowed here.", delete_after=5)
+                await message.channel.send(f"{message.author.mention}, Discord invites aren't allowed here.", delete_after=5)
             except discord.HTTPException:
                 pass
 
@@ -970,22 +985,6 @@ async def spamdetectoff_cmd(interaction: discord.Interaction):
     global spam_detection
     spam_detection = False
     await interaction.response.send_message("Spam detection **OFF**.", ephemeral=True)
-
-
-@bot.tree.command(name="invitefilter", description="Turn ON auto-delete of Discord invites by non-admins")
-@is_trusted()
-async def invitefilter_cmd(interaction: discord.Interaction):
-    global invite_filter
-    invite_filter = True
-    await interaction.response.send_message("Invite filter **ON** - Discord invites posted by non-admins will be deleted.", ephemeral=True)
-
-
-@bot.tree.command(name="invitefilteroff", description="Turn OFF auto-delete of Discord invites")
-@is_trusted()
-async def invitefilteroff_cmd(interaction: discord.Interaction):
-    global invite_filter
-    invite_filter = False
-    await interaction.response.send_message("Invite filter **OFF**.", ephemeral=True)
 
 
 @bot.tree.command(name="antibot", description="Turn ON auto-kick of bots that join unapproved")
@@ -1318,7 +1317,6 @@ async def raidstatus(interaction: discord.Interaction):
         f"Raid mode: {'**ACTIVE** - server locked' if raiding else 'off'}\n"
         f"Channel raid protection: {'**ON**' if channel_raid_protection else '**OFF**'}\n"
         f"Spam detection: {'**ON**' if spam_detection else '**OFF**'}\n"
-        f"Invite filter: {'**ON**' if invite_filter else '**OFF**'}\n"
         f"Anti-bot: {'**ON**' if antibot else '**OFF**'}\n"
         f"Bad word filter: {'**ON**' if badwords_filter else '**OFF**'}\n"
         f"Anti-link: {'**ON**' if antilink else '**OFF**'}\n"
@@ -1331,12 +1329,67 @@ async def raidstatus(interaction: discord.Interaction):
     )
 
 
+def fit(text, limit=1990):
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+async def ai_generate(prompt, user_id):
+    if not AI_ENABLED:
+        return "AI is not set up yet. The owner needs to add an `AI_API_KEY` to the bot environment."
+    memory = AI_MEMORY.setdefault(user_id, deque(maxlen=12))
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant in a Discord server. Be friendly and concise."}
+    ]
+    for role, text in memory:
+        messages.append({"role": role, "content": text})
+    messages.append({"role": "user", "content": prompt})
+    payload = {
+        "model": AI_MODEL,
+        "messages": messages,
+        "max_tokens": 600,
+        "temperature": 0.7,
+    }
+    headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"}
+    try:
+        async with bot.ai_session.post(
+            "https://api.deepseek.com/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=45),
+        ) as resp:
+            data = await resp.json()
+            if resp.status != 200:
+                return f"AI error: {data.get('error', {}).get('message', resp.status)}"
+            reply = data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"AI error: {e}")
+        return "AI is struggling right now, try again in a few seconds."
+    memory.append(("user", prompt))
+    memory.append(("assistant", reply))
+    return fit(reply)
+
+
+@bot.tree.command(name="ai", description="Ask the AI assistant anything")
+async def ai_cmd(interaction: discord.Interaction, message: str):
+    await interaction.response.defer()
+    reply = await ai_generate(message, interaction.user.id)
+    await interaction.followup.send(reply)
+
+
+@bot.tree.command(name="aichat", description="Turn chat mode ON for this channel")
+@is_trusted()
+async def aichat_cmd(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "AI chat mode is **disabled** for now.", ephemeral=True
+    )
+
+
 @bot.tree.error
 async def on_app_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
         await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
     else:
-        print(error)
+        print(error)  # noqa: E501
 
 
 if __name__ == "__main__":
