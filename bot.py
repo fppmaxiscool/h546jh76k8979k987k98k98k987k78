@@ -744,7 +744,10 @@ async def on_message(message):
 
     for trigger, response in AUTO_RESPONSES.items():
         if trigger in content.lower():
-            await message.channel.send(response)
+            try:
+                await message.reply(response)
+            except discord.HTTPException:
+                pass
             break
 
     if AI_ENABLED and AI_CHANNEL_ID and message.channel.id == AI_CHANNEL_ID:
