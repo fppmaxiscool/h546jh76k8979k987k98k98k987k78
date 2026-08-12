@@ -1637,7 +1637,8 @@ ADMIN_SYSTEM = (
     "grant/remove to members, set role permissions list_roles create_role rename_role delete_role set_role_permissions grant_role remove_role), "
     "manage channels (create, rename, delete, set slowmode) and send or purge messages in channels. "
     "set_role_permissions can change ANY Discord permission including administrator and mention_everyone; "
-    "use '-' prefix to revoke a permission, bare or '+' to grant."
+    "use '-' prefix to revoke a permission, bare or '+' to grant. "
+    "set_channel_permissions sets per-channel overrides for a role or member; get_role_permissions shows a role's current perms."
     "Use search_members to find a member's exact user id and list_roles/list_channels for ids before acting on them. "
     "The owner, the bot itself, admins and whitelisted staff are protected - tools refuse to moderate them, respect that. "
     "Never use @everyone or @here. Keep replies short and state clearly what you did."
@@ -1877,6 +1878,44 @@ async def run_admin_tool(guild, name, args):
         await target.delete(reason="AI admin: delete role")
         await audit(guild, f":wastebasket: AI admin deleted role **{target.name}**")
         return f"Deleted role **{target.name}**."
+    if name == "get_role_permissions":
+        target, err = resolve_role(guild, args.get("role_id"), args.get("query"))
+        if err:
+            return err
+        enabled = [p for p in discord.Permissions.VALID_FLAGS if getattr(target.permissions, p)]
+        return f"Role **{target.name}** (id={target.id}):\nEnabled permissions: {', '.join(enabled) or 'none'}"
+    if name == "set_channel_permissions":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        target_type = (args.get("target_type") or "role").lower()
+        if target_type == "member" or (args.get("member_id") and not args.get("role_id")):
+            member, err2 = resolve_member_arg(guild, {"member_id": args.get("member_id"), "query": args.get("target_query")})
+            if err2:
+                return err2
+            target = member
+            target_label = f"**{member}** (member)"
+        else:
+            role, err2 = resolve_role(guild, args.get("role_id"), args.get("target_query"))
+            if err2:
+                return err2
+            target = role
+            target_label = f"**{role.name}** (role)"
+        grant, revoke, invalid = parse_permissions(args.get("permissions") or "")
+        if invalid and not grant and not revoke:
+            return f"Unknown permission names: {', '.join(invalid)}. Valid: {', '.join(sorted(discord.Permissions.VALID_FLAGS))}"
+        ow = ch.overwrites_for(target)
+        for p in grant:
+            setattr(ow, p, True)
+        for p in revoke:
+            setattr(ow, p, False)
+        try:
+            await ch.set_permissions(target, overwrite=ow, reason="AI admin: channel permissions")
+        except discord.HTTPException as e:
+            return f"Failed to set channel permissions: {e}"
+        changed = grant + [f"-{p}" for p in revoke]
+        await audit(guild, f":shield: AI admin changed permissions for {target_label} in #{ch.name}: {', '.join(changed) or 'cleared'}")
+        return f"Updated permissions for {target_label} in #{ch.name}. Granted: {', '.join(grant) or 'none'} | Removed: {', '.join(revoke) or 'none'}"
     if name == "set_role_permissions":
         target, err = resolve_role(guild, args.get("role_id"), args.get("query"))
         if err:
@@ -2257,6 +2296,42 @@ ADMIN_TOOLS = [
                     "query": {"type": "string", "description": "Role name as alternative to role_id"},
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_role_permissions",
+            "description": "Show all currently enabled permissions of a role.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Role name as alternative to role_id"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_channel_permissions",
+            "description": "Set channel-specific permission overrides for a role or member in one channel. "
+            "Permissions same list as set_role_permissions; prefix '-' to revoke, bare or '+' to grant.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "target_type": {"type": "string", "enum": ["role", "member"]},
+                    "role_id": {"type": "string", "description": "Role id (if target is a role)"},
+                    "member_id": {"type": "string", "description": "Member id (if target is a member)"},
+                    "target_query": {"type": "string", "description": "Role or member name as alternative to their id"},
+                    "permissions": {"type": "string", "description": "Comma list, e.g. 'send_messages, -view_channel'"},
+                },
+                "required": ["permissions"],
             },
         },
     },
