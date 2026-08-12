@@ -2205,10 +2205,8 @@ async def run_admin_tool(guild, name, args):
             return "No members found."
         lines = [
             f"- id={m.id} | {m.name} | display: {m.display_name} | bot: {m.bot}"
-            for m in matches[:10]
+            for m in matches
         ]
-        if len(matches) > 10:
-            lines.append(f"... and {len(matches) - 10} more")
         return "\n".join(lines)
     if name == "list_channels":
         lines = [
@@ -2266,9 +2264,7 @@ async def run_admin_tool(guild, name, args):
         holders = [m for m in target.members if not m.bot]
         if not holders:
             return f"No members currently hold the role **{target.name}**."
-        lines = [f"- {m.name} (id={m.id}, display: {m.display_name})" for m in holders[:30]]
-        if len(holders) > 30:
-            lines.append(f"... and {len(holders) - 30} more")
+        lines = [f"- {m.name} (id={m.id}, display: {m.display_name})" for m in holders]
         return f"Members holding role **{target.name}** ({len(holders)}):\n" + "\n".join(lines)
     if name == "message_counts":
         top = max(1, min(int(args.get("top") or 10), 50))
@@ -2296,15 +2292,13 @@ async def run_admin_tool(guild, name, args):
             return "No members are currently timed out."
         lines = [
             f"- {m.name} (id={m.id}) until {m.timeout_until.strftime('%Y-%m-%d %H:%M')} UTC"
-            for m in timed_out[:30]
+            for m in timed_out
         ]
-        if len(timed_out) > 30:
-            lines.append(f"... and {len(timed_out) - 30} more")
         return "Members currently timed out:\n" + "\n".join(lines)
     if name == "list_roles":
         lines = [
             f"- id={r.id} | {r.name} | color: #{r.color.value:06x} | hoist: {r.hoist} | mentionable: {r.mentionable}"
-            for r in sorted(guild.roles, key=lambda r: r.position, reverse=True)[:40]
+            for r in sorted(guild.roles, key=lambda r: r.position, reverse=True)
         ]
         return "\n".join(lines) or "No roles."
     if name == "create_role":
@@ -2624,7 +2618,7 @@ async def run_admin_tool(guild, name, args):
             return "No active threads."
         lines = [
             f"- id={t.id} | #{t.name} | parent: #{t.parent.name if t.parent else 'none'} | members: {len(t.members)}"
-            for t in threads[:40]
+            for t in threads
         ]
         return "Active threads:\n" + "\n".join(lines)
     if name == "audit_log":
