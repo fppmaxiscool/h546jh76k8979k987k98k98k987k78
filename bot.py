@@ -709,12 +709,23 @@ async def on_message(message):
             if len(fresh) > HOURLY_LIMIT:
                 try:
                     await message.delete()
+                except discord.HTTPException:
+                    pass
+                try:
+                    await message.author.timeout(
+                        discord.utils.utcnow() + datetime.timedelta(hours=1),
+                        reason="10 messages/hour limit exceeded",
+                    )
+                    await message.channel.send(
+                        f":mute: **{message.author}** hit the **{HOURLY_LIMIT} messages/hour** limit - timed out for 1 hour.",
+                        delete_after=10,
+                    )
+                    await audit(message.guild, f":mute: **{message.author}** exceeded hourly limit ({len(fresh) - HOURLY_LIMIT} extra messages)")
+                except discord.HTTPException:
                     await message.channel.send(
                         f"{message.author.mention}, you've reached the **{HOURLY_LIMIT} messages/hour** limit.",
                         delete_after=5,
                     )
-                except discord.HTTPException:
-                    pass
 
     for trigger, response in AUTO_RESPONSES.items():
         if trigger in content.lower():
