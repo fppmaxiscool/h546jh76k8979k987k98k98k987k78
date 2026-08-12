@@ -310,8 +310,6 @@ def is_trusted():
 def is_whitelisted(member):
     if member.id == OWNER_ID or member.id in WHITELIST_USER_IDS:
         return True
-    if member.guild_permissions.administrator:
-        return True
     return any(r.id in WHITELIST_ROLE_IDS for r in member.roles)
 
 
@@ -1402,7 +1400,6 @@ async def ticketadd(interaction: discord.Interaction, member: discord.Member):
     is_support = support_role is not None and support_role in interaction.user.roles
     if not (
         interaction.user.id == OWNER_ID
-        or interaction.user.guild_permissions.administrator
         or interaction.user.id == opener_id
         or is_support
     ):
