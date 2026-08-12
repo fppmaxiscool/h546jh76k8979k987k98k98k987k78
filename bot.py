@@ -39,7 +39,6 @@ AI_MODEL = os.getenv("AI_MODEL", "deepseek-chat").strip()
 AI_ENABLED = bool(AI_API_KEY)
 AI_MEMORY = {}
 AI_ADMIN_MEMORY = defaultdict(lambda: deque(maxlen=12))
-AI_CHANNEL_ID = None
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -56,14 +55,8 @@ CHANNEL_CREATE_WINDOW = 3
 CHANNEL_CREATE_COUNT = 4
 CHANNEL_CREATE_LOG = deque(maxlen=100)
 
-spam_window = 5
-spam_count = 5
-spam_mute_minutes = 10
-spam_ban_offenses = 3
 SPAM_OFFENSES = defaultdict(int)
 MESSAGE_LOG = defaultdict(lambda: deque(maxlen=100))
-RAID_SLOWMODE = 0
-RAID_SLOWMODE_SAVED = {}
 
 AI_LIMIT = 10
 AI_WINDOW = 3600
@@ -259,18 +252,43 @@ WATCHER_PERMS = dict(
     send_messages=False,
 )
 
-WHITELIST_USER_IDS = set()
-WHITELIST_ROLE_IDS = set()
-WELCOME_ROLE_ID = None
-AUTO_RESPONSES = {}
-LINK_WHITELIST = set()
+class GuildSettings:
+    def __init__(self):
+        self.whitelisted_users = set()
+        self.whitelisted_roles = set()
+        self.welcome_role_id = None
+        self.auto_responses = {}
+        self.link_whitelist = set()
+        self.room_inactive_days = 14
+        self.audit_channel_id = None
+        self.ai_channel_id = None
+        self.raiding = False
+        self.locked_channels = []
+        self.raid_slowmode = 0
+        self.raid_slowmode_saved = {}
+        self.channel_raid_protection = True
+        self.spam_detection = True
+        self.spam_window = 5
+        self.spam_count = 5
+        self.spam_mute_minutes = 10
+        self.spam_ban_offenses = 3
+        self.antibot = True
+        self.badwords_filter = True
+        self.antilink = True
+
+
+SETTINGS = defaultdict(GuildSettings)
+
+
+def settings_for(guild_id):
+    return SETTINGS[guild_id]
 
 DEFAULT_LINK_WHITELIST = {
     "gofile.io", "tenor.com", "giphy.com", "clipy.com", "gfycat.com",
     "imgur.com", "cdn.discordapp.com",
 }
 
-TICKET_CONFIG = {}
+TICKET_CONFIG = defaultdict(dict)
 TICKET_MEMBER_PERMS = dict(
     view_channel=True, read_message_history=True, send_messages=True,
     attach_files=True, embed_links=True, add_reactions=True,
@@ -284,35 +302,28 @@ AUDIT_CHANNEL_NAME = "bot-logs"
 BACKUP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot-backup.json")
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot-config.json")
 STATS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot-stats.json")
-ROOM_INACTIVE_DAYS = 14
 CLEANUP_INTERVAL = 12 * 3600
 
-raiding = False
-locked_channels = []
 MESSAGE_STATS = defaultdict(int)
-channel_raid_protection = True
-spam_detection = True
-antibot = True
-badwords_filter = True
-antilink = True
-audit_channel_id = None
 
 
 def is_trusted():
     async def predicate(interaction: discord.Interaction):
+        s = settings_for(interaction.guild_id)
         return (
             interaction.user.id == OWNER_ID
-            or interaction.user.id in WHITELIST_USER_IDS
-            or any(r.id in WHITELIST_ROLE_IDS for r in interaction.user.roles)
+            or interaction.user.id in s.whitelisted_users
+            or any(r.id in s.whitelisted_roles for r in interaction.user.roles)
         )
 
     return app_commands.check(predicate)
 
 
 def is_whitelisted(member):
-    if member.id == OWNER_ID or member.id in WHITELIST_USER_IDS:
+    s = settings_for(member.guild.id)
+    if member.id == OWNER_ID or member.id in s.whitelisted_users:
         return True
-    return any(r.id in WHITELIST_ROLE_IDS for r in member.roles)
+    return any(r.id in s.whitelisted_roles for r in member.roles)
 
 
 def save_stats():
@@ -340,59 +351,68 @@ async def stats_save_loop():
         save_stats()
 
 
-def save_config():
-    data = {
-        "channel_raid_protection": channel_raid_protection,
-        "spam_detection": spam_detection,
-        "spam_window": spam_window,
-        "spam_count": spam_count,
-        "spam_mute_minutes": spam_mute_minutes,
-        "spam_ban_offenses": spam_ban_offenses,
-        "raid_slowmode": RAID_SLOWMODE,
-        "ai_channel_id": AI_CHANNEL_ID,
-        "antibot": antibot,
-        "badwords_filter": badwords_filter,
-        "antilink": antilink,
-        "welcome_role_id": WELCOME_ROLE_ID,
-        "auto_responses": AUTO_RESPONSES,
-        "link_whitelist": sorted(LINK_WHITELIST),
-        "whitelist_users": sorted(WHITELIST_USER_IDS),
-        "whitelist_roles": sorted(WHITELIST_ROLE_IDS),
-        "room_inactive_days": ROOM_INACTIVE_DAYS,
-        "audit_channel_id": audit_channel_id,
+def save_config(guild_id):
+    s = settings_for(guild_id)
+    data = {}
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            data = {}
+    servers = data.setdefault("servers", {})
+    servers[str(guild_id)] = {
+        "channel_raid_protection": s.channel_raid_protection,
+        "spam_detection": s.spam_detection,
+        "spam_window": s.spam_window,
+        "spam_count": s.spam_count,
+        "spam_mute_minutes": s.spam_mute_minutes,
+        "spam_ban_offenses": s.spam_ban_offenses,
+        "raid_slowmode": s.raid_slowmode,
+        "ai_channel_id": s.ai_channel_id,
+        "antibot": s.antibot,
+        "badwords_filter": s.badwords_filter,
+        "antilink": s.antilink,
+        "welcome_role_id": s.welcome_role_id,
+        "auto_responses": s.auto_responses,
+        "link_whitelist": sorted(s.link_whitelist),
+        "whitelist_users": sorted(s.whitelisted_users),
+        "whitelist_roles": sorted(s.whitelisted_roles),
+        "room_inactive_days": s.room_inactive_days,
+        "audit_channel_id": s.audit_channel_id,
+        "ticket": dict(TICKET_CONFIG.get(guild_id, {})),
     }
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
 
 def load_config():
-    global channel_raid_protection, spam_detection, antibot, badwords_filter, antilink
-    global spam_window, spam_count, spam_mute_minutes, spam_ban_offenses, RAID_SLOWMODE
-    global AI_CHANNEL_ID
-    global WELCOME_ROLE_ID, AUTO_RESPONSES, LINK_WHITELIST, WHITELIST_USER_IDS, WHITELIST_ROLE_IDS
-    global ROOM_INACTIVE_DAYS, audit_channel_id
     if not os.path.exists(CONFIG_FILE):
         return False
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         data = json.load(f)
-    channel_raid_protection = data.get("channel_raid_protection", True)
-    spam_detection = data.get("spam_detection", True)
-    spam_window = data.get("spam_window", 5)
-    spam_count = data.get("spam_count", 5)
-    spam_mute_minutes = data.get("spam_mute_minutes", 10)
-    spam_ban_offenses = data.get("spam_ban_offenses", 3)
-    RAID_SLOWMODE = data.get("raid_slowmode", 0)
-    AI_CHANNEL_ID = data.get("ai_channel_id")
-    antibot = data.get("antibot", True)
-    badwords_filter = data.get("badwords_filter", True)
-    antilink = data.get("antilink", True)
-    WELCOME_ROLE_ID = data.get("welcome_role_id")
-    AUTO_RESPONSES = dict(data.get("auto_responses", {}))
-    LINK_WHITELIST = set(data.get("link_whitelist", []))
-    WHITELIST_USER_IDS = set(data.get("whitelist_users", []))
-    WHITELIST_ROLE_IDS = set(data.get("whitelist_roles", []))
-    ROOM_INACTIVE_DAYS = data.get("room_inactive_days", 14)
-    audit_channel_id = data.get("audit_channel_id")
+    for gid, g in data.get("servers", {}).items():
+        s = settings_for(int(gid))
+        s.channel_raid_protection = g.get("channel_raid_protection", True)
+        s.spam_detection = g.get("spam_detection", True)
+        s.spam_window = g.get("spam_window", 5)
+        s.spam_count = g.get("spam_count", 5)
+        s.spam_mute_minutes = g.get("spam_mute_minutes", 10)
+        s.spam_ban_offenses = g.get("spam_ban_offenses", 3)
+        s.raid_slowmode = g.get("raid_slowmode", 0)
+        s.ai_channel_id = g.get("ai_channel_id")
+        s.antibot = g.get("antibot", True)
+        s.badwords_filter = g.get("badwords_filter", True)
+        s.antilink = g.get("antilink", True)
+        s.welcome_role_id = g.get("welcome_role_id")
+        s.auto_responses = dict(g.get("auto_responses", {}))
+        s.link_whitelist = set(g.get("link_whitelist", []))
+        s.whitelisted_users = set(g.get("whitelist_users", []))
+        s.whitelisted_roles = set(g.get("whitelist_roles", []))
+        s.room_inactive_days = g.get("room_inactive_days", 14)
+        s.audit_channel_id = g.get("audit_channel_id")
+        if g.get("ticket"):
+            TICKET_CONFIG[int(gid)] = g["ticket"]
     return True
 
 
@@ -423,8 +443,8 @@ async def announce(guild, text):
 
 
 async def audit(guild, text):
-    global audit_channel_id
-    channel = guild.get_channel(audit_channel_id) if audit_channel_id else None
+    s = settings_for(guild.id)
+    channel = guild.get_channel(s.audit_channel_id) if s.audit_channel_id else None
     if channel is None:
         channel = discord.utils.get(guild.text_channels, name=AUDIT_CHANNEL_NAME)
         if channel is None and guild.me.guild_permissions.manage_channels:
@@ -432,7 +452,7 @@ async def audit(guild, text):
                 channel = await guild.create_text_channel(AUDIT_CHANNEL_NAME, reason="Audit log")
             except discord.HTTPException:
                 channel = None
-        audit_channel_id = channel.id if channel else None
+        s.audit_channel_id = channel.id if channel else None
     if channel is not None and channel.permissions_for(guild.me).send_messages:
         try:
             await channel.send(f"`{datetime.datetime.now(datetime.timezone.utc).strftime('%H:%M')}` {text}")
@@ -441,8 +461,8 @@ async def audit(guild, text):
 
 
 async def lockdown_guild(guild):
-    global locked_channels
-    locked_channels = []
+    s = settings_for(guild.id)
+    s.locked_channels = []
     default_role = guild.default_role
     tasks = []
     for channel in guild.channels:
@@ -456,7 +476,7 @@ async def lockdown_guild(guild):
                 default_role, send_messages=False, connect=False, reason="Raid lockdown"
             )
         )
-        locked_channels.append((channel.id, original))
+        s.locked_channels.append((channel.id, original))
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
     try:
@@ -466,10 +486,10 @@ async def lockdown_guild(guild):
 
 
 async def unlock_guild(guild):
-    global locked_channels
+    s = settings_for(guild.id)
     default_role = guild.default_role
     tasks = []
-    for channel_id, original in locked_channels:
+    for channel_id, original in s.locked_channels:
         channel = guild.get_channel(channel_id)
         if channel is None:
             continue
@@ -479,17 +499,17 @@ async def unlock_guild(guild):
         tasks.append(
             channel.set_permissions(default_role, overwrite=overwrite, reason="Raid lockdown lifted")
         )
-    locked_channels = []
+    s.locked_channels = []
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
-    for channel_id, delay in RAID_SLOWMODE_SAVED.items():
+    for channel_id, delay in s.raid_slowmode_saved.items():
         channel = guild.get_channel(channel_id)
         if channel is not None:
             try:
                 await channel.edit(slowmode_delay=delay, reason="Raid lockdown lifted")
             except discord.HTTPException:
                 pass
-    RAID_SLOWMODE_SAVED.clear()
+    s.raid_slowmode_saved.clear()
     try:
         await guild.edit(verification_level=discord.VerificationLevel.low, reason="Raid lockdown lifted")
     except discord.HTTPException:
@@ -497,17 +517,17 @@ async def unlock_guild(guild):
 
 
 async def trigger_raid(guild, reason):
-    global raiding
-    raiding = True
+    s = settings_for(guild.id)
+    s.raiding = True
     await announce(guild, f":rotating_light: **RAID DETECTED** ({reason}). Locking down the server. New joins will be kicked until it is safe.")
     await audit(guild, f":rotating_light: RAID triggered: {reason}")
     await lockdown_guild(guild)
-    if RAID_SLOWMODE > 0:
+    if s.raid_slowmode > 0:
         for ch in guild.text_channels:
             try:
-                if ch.slowmode_delay != RAID_SLOWMODE:
-                    RAID_SLOWMODE_SAVED[ch.id] = ch.slowmode_delay
-                    await ch.edit(slowmode_delay=RAID_SLOWMODE, reason="Raid lockdown slowmode")
+                if ch.slowmode_delay != s.raid_slowmode:
+                    s.raid_slowmode_saved[ch.id] = ch.slowmode_delay
+                    await ch.edit(slowmode_delay=s.raid_slowmode, reason="Raid lockdown slowmode")
             except discord.HTTPException:
                 pass
 
@@ -657,7 +677,8 @@ async def restore_guild(guild, data):
 
 async def cleanup_rooms():
     for guild in bot.guilds:
-        if ROOM_INACTIVE_DAYS <= 0:
+        s = settings_for(guild.id)
+        if s.room_inactive_days <= 0:
             continue
         for ch in guild.text_channels:
             if not (ch.name.startswith(ROOM_PREFIX) or ch.name.startswith(MARKET_PREFIX)):
@@ -667,9 +688,9 @@ async def cleanup_rooms():
                 async for m in ch.history(limit=1):
                     last = m
                 ref = last.created_at if last else ch.created_at
-                if (discord.utils.utcnow() - ref).days >= ROOM_INACTIVE_DAYS:
+                if (discord.utils.utcnow() - ref).days >= s.room_inactive_days:
                     await ch.delete(reason="Inactive room cleanup")
-                    await audit(guild, f":broom: Deleted inactive room **{ch.name}** (no messages in {ROOM_INACTIVE_DAYS} days)")
+                    await audit(guild, f":broom: Deleted inactive room **{ch.name}** (no messages in {s.room_inactive_days} days)")
             except discord.HTTPException:
                 continue
 
@@ -699,8 +720,8 @@ class TicketView(discord.ui.View):
     @discord.ui.button(label="Open Ticket", style=discord.ButtonStyle.primary, custom_id="ticket_open", emoji="\U0001f3ab")
     async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
-        cfg = TICKET_CONFIG
-        if not cfg or cfg.get("guild_id") != guild.id:
+        cfg = TICKET_CONFIG[guild.id]
+        if not cfg:
             await interaction.response.send_message("Tickets aren't set up yet. Ask an admin to run /ticketsetup.", ephemeral=True)
             return
         open_category = guild.get_channel(cfg.get("open_category_id"))
@@ -733,8 +754,8 @@ class CloseTicketView(discord.ui.View):
     @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, custom_id="ticket_close")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
-        cfg = TICKET_CONFIG
-        if not cfg or cfg.get("guild_id") != guild.id:
+        cfg = TICKET_CONFIG[guild.id]
+        if not cfg:
             await interaction.response.send_message("Tickets aren't set up.", ephemeral=True)
             return
         closed_category = guild.get_channel(cfg.get("closed_category_id"))
@@ -797,8 +818,9 @@ async def on_close():
 
 @bot.event
 async def on_member_join(member):
+    s = settings_for(member.guild.id)
     if member.bot:
-        if antibot and member.id != bot.user.id:
+        if s.antibot and member.id != bot.user.id:
             try:
                 await member.kick(reason="Unapproved bot join")
                 await announce(member.guild, f":robot: Kicked unapproved bot **{member.name}**.")
@@ -807,15 +829,15 @@ async def on_member_join(member):
                 pass
         return
 
-    if WELCOME_ROLE_ID:
-        role = member.guild.get_role(WELCOME_ROLE_ID)
+    if s.welcome_role_id:
+        role = member.guild.get_role(s.welcome_role_id)
         if role is not None:
             try:
                 await member.add_roles(role, reason="Welcome role")
             except discord.HTTPException:
                 pass
 
-    if raiding:
+    if s.raiding:
         try:
             await member.kick(reason="Join during raid lockdown")
         except discord.HTTPException:
@@ -832,7 +854,8 @@ async def on_member_join(member):
 
 @bot.event
 async def on_guild_channel_create(channel):
-    if not channel_raid_protection:
+    s = settings_for(channel.guild.id)
+    if not s.channel_raid_protection:
         return
     guild = channel.guild
     now = time.monotonic()
@@ -862,6 +885,7 @@ async def on_message(message):
     MESSAGE_STATS[f"{message.guild.id}:{message.author.id}"] += 1
 
     content = message.content
+    s = settings_for(message.guild.id)
 
     if not is_whitelisted(message.author):
         if DISCORD_INVITE_RE.search(content):
@@ -871,7 +895,7 @@ async def on_message(message):
             except discord.HTTPException:
                 pass
 
-        if badwords_filter and BAD_WORD_RE.search(content):
+        if s.badwords_filter and BAD_WORD_RE.search(content):
             try:
                 await message.delete()
                 await message.channel.send(f"{message.author.mention}, that word isn't allowed here.", delete_after=5)
@@ -879,9 +903,9 @@ async def on_message(message):
             except discord.HTTPException:
                 pass
 
-        if antilink:
+        if s.antilink:
             links = LINK_RE.findall(content)
-            allowed = LINK_WHITELIST | DEFAULT_LINK_WHITELIST
+            allowed = s.link_whitelist | DEFAULT_LINK_WHITELIST
             bad = [l for l in links if not any(d in l.lower() for d in allowed)]
             if bad:
                 try:
@@ -890,29 +914,29 @@ async def on_message(message):
                 except discord.HTTPException:
                     pass
 
-        if spam_detection:
+        if s.spam_detection:
             now = time.monotonic()
             log = MESSAGE_LOG[message.author.id]
             log.append(now)
-            fresh = [t for t in log if now - t <= spam_window]
+            fresh = [t for t in log if now - t <= s.spam_window]
             MESSAGE_LOG[message.author.id] = deque(fresh, maxlen=100)
-            if len(fresh) >= spam_count and message.guild.me.guild_permissions.moderate_members:
+            if len(fresh) >= s.spam_count and message.guild.me.guild_permissions.moderate_members:
                 SPAM_OFFENSES[message.author.id] += 1
                 try:
-                    if spam_ban_offenses > 0 and SPAM_OFFENSES[message.author.id] >= spam_ban_offenses:
+                    if s.spam_ban_offenses > 0 and SPAM_OFFENSES[message.author.id] >= s.spam_ban_offenses:
                         await message.author.ban(reason=f"Repeated spam ({SPAM_OFFENSES[message.author.id]} offenses)")
                         await message.channel.send(f":hammer: **{message.author}** banned for repeated spam.")
                         await audit(message.guild, f":hammer: **{message.author}** banned for repeated spam ({SPAM_OFFENSES[message.author.id]} offenses)")
                     else:
                         await message.author.timeout(
-                            discord.utils.utcnow() + datetime.timedelta(minutes=spam_mute_minutes),
+                            discord.utils.utcnow() + datetime.timedelta(minutes=s.spam_mute_minutes),
                             reason="Spam detection",
                         )
                         await message.channel.send(f":mute: **{message.author}** muted for spamming.")
                 except discord.HTTPException:
                     pass
 
-    for trigger, response in AUTO_RESPONSES.items():
+    for trigger, response in s.auto_responses.items():
         if trigger in content.lower():
             try:
                 await message.reply(response)
@@ -1147,10 +1171,10 @@ async def lock(interaction: discord.Interaction):
 @bot.tree.command(name="unlock", description="Lift the lockdown")
 @is_trusted()
 async def unlock(interaction: discord.Interaction):
-    global raiding
+    s = settings_for(interaction.guild_id)
     await interaction.response.defer(ephemeral=True)
     await unlock_guild(interaction.guild)
-    raiding = False
+    s.raiding = False
     await announce(interaction.guild, ":unlock: **Lockdown lifted** by " + interaction.user.mention)
     await audit(interaction.guild, f":unlock: Lockdown lifted by {interaction.user}")
     await interaction.followup.send("Lockdown lifted.")
@@ -1159,10 +1183,10 @@ async def unlock(interaction: discord.Interaction):
 @bot.tree.command(name="endraid", description="End an active raid lockdown and unblock the server")
 @is_trusted()
 async def endraid(interaction: discord.Interaction):
-    global raiding
+    s = settings_for(interaction.guild_id)
     await interaction.response.defer(ephemeral=True)
     await unlock_guild(interaction.guild)
-    raiding = False
+    s.raiding = False
     await announce(interaction.guild, ":white_check_mark: **Raid lockdown lifted** by " + interaction.user.mention)
     await audit(interaction.guild, f":white_check_mark: Raid lockdown lifted by {interaction.user}")
     await interaction.followup.send("Raid lockdown lifted.")
@@ -1171,8 +1195,9 @@ async def endraid(interaction: discord.Interaction):
 @bot.tree.command(name="raidprotection", description="Turn ON automatic channel-creation raid detection")
 @is_trusted()
 async def raidprotection_cmd(interaction: discord.Interaction):
-    global channel_raid_protection
-    channel_raid_protection = True
+    s = settings_for(interaction.guild_id)
+    s.channel_raid_protection = True
+    save_config(interaction.guild_id)
     await interaction.response.send_message(
         f"Channel raid protection **ON** - if more than {CHANNEL_CREATE_COUNT} channels are created within {CHANNEL_CREATE_WINDOW}s, they will be auto-deleted.",
         ephemeral=True,
@@ -1182,24 +1207,27 @@ async def raidprotection_cmd(interaction: discord.Interaction):
 @bot.tree.command(name="raidprotectionoff", description="Turn OFF automatic channel-creation raid detection")
 @is_trusted()
 async def raidprotectionoff_cmd(interaction: discord.Interaction):
-    global channel_raid_protection
-    channel_raid_protection = False
+    s = settings_for(interaction.guild_id)
+    s.channel_raid_protection = False
+    save_config(interaction.guild_id)
     await interaction.response.send_message("Channel raid protection **OFF** - channels will no longer be auto-deleted.", ephemeral=True)
 
 
 @bot.tree.command(name="spamdetect", description="Turn ON auto-mute for spammers")
 @is_trusted()
 async def spamdetect_cmd(interaction: discord.Interaction):
-    global spam_detection
-    spam_detection = True
-    await interaction.response.send_message("Spam detection **ON** - users sending 5+ messages in 5s get a 10min mute.", ephemeral=True)
+    s = settings_for(interaction.guild_id)
+    s.spam_detection = True
+    save_config(interaction.guild_id)
+    await interaction.response.send_message(f"Spam detection **ON** - users sending {s.spam_count}+ messages in {s.spam_window}s get a {s.spam_mute_minutes}min mute.", ephemeral=True)
 
 
 @bot.tree.command(name="spamdetectoff", description="Turn OFF auto-mute for spammers")
 @is_trusted()
 async def spamdetectoff_cmd(interaction: discord.Interaction):
-    global spam_detection
-    spam_detection = False
+    s = settings_for(interaction.guild_id)
+    s.spam_detection = False
+    save_config(interaction.guild_id)
     await interaction.response.send_message("Spam detection **OFF**.", ephemeral=True)
 
 
@@ -1212,18 +1240,18 @@ async def spamsettings_cmd(
     mute_minutes: app_commands.Range[int, 1, 10080] = None,
     ban_offenses: app_commands.Range[int, 0, 10] = None,
 ):
-    global spam_count, spam_window, spam_mute_minutes, spam_ban_offenses
+    s = settings_for(interaction.guild_id)
     if count is not None:
-        spam_count = count
+        s.spam_count = count
     if window is not None:
-        spam_window = window
+        s.spam_window = window
     if mute_minutes is not None:
-        spam_mute_minutes = mute_minutes
+        s.spam_mute_minutes = mute_minutes
     if ban_offenses is not None:
-        spam_ban_offenses = ban_offenses
-    save_config()
+        s.spam_ban_offenses = ban_offenses
+    save_config(interaction.guild_id)
     await interaction.response.send_message(
-        f"Spam settings: **{spam_count} msgs** in **{spam_window}s** -> mute **{spam_mute_minutes}min** | ban after **{spam_ban_offenses}** offenses (0 = never).",
+        f"Spam settings: **{s.spam_count} msgs** in **{s.spam_window}s** -> mute **{s.spam_mute_minutes}min** | ban after **{s.spam_ban_offenses}** offenses (0 = never).",
         ephemeral=True,
     )
 
@@ -1231,9 +1259,9 @@ async def spamsettings_cmd(
 @bot.tree.command(name="raidslowmode", description="Set channel slowmode applied during raid lockdown (0 = off)")
 @is_trusted()
 async def raidslowmode_cmd(interaction: discord.Interaction, seconds: app_commands.Range[int, 0, 21600]):
-    global RAID_SLOWMODE
-    RAID_SLOWMODE = seconds
-    save_config()
+    s = settings_for(interaction.guild_id)
+    s.raid_slowmode = seconds
+    save_config(interaction.guild_id)
     await interaction.response.send_message(
         f"Raid slowmode set to **{seconds}s** (0 = off).",
         ephemeral=True,
@@ -1243,16 +1271,18 @@ async def raidslowmode_cmd(interaction: discord.Interaction, seconds: app_comman
 @bot.tree.command(name="antibot", description="Turn ON auto-kick of bots that join unapproved")
 @is_trusted()
 async def antibot_cmd(interaction: discord.Interaction):
-    global antibot
-    antibot = True
+    s = settings_for(interaction.guild_id)
+    s.antibot = True
+    save_config(interaction.guild_id)
     await interaction.response.send_message("Anti-bot **ON** - any bot joining will be kicked.", ephemeral=True)
 
 
 @bot.tree.command(name="antibotoff", description="Turn OFF auto-kick of bots")
 @is_trusted()
 async def antibotoff_cmd(interaction: discord.Interaction):
-    global antibot
-    antibot = False
+    s = settings_for(interaction.guild_id)
+    s.antibot = False
+    save_config(interaction.guild_id)
     await interaction.response.send_message("Anti-bot **OFF**.", ephemeral=True)
 
 
@@ -1260,8 +1290,9 @@ async def antibotoff_cmd(interaction: discord.Interaction):
 @app_commands.describe(role="Role to assign on join")
 @is_trusted()
 async def welcomerole(interaction: discord.Interaction, role: discord.Role = None):
-    global WELCOME_ROLE_ID
-    WELCOME_ROLE_ID = role.id if role else None
+    s = settings_for(interaction.guild_id)
+    s.welcome_role_id = role.id if role else None
+    save_config(interaction.guild_id)
     await interaction.response.send_message(
         f"Welcome role set to {role.mention}." if role else "Welcome role disabled.",
         ephemeral=True,
@@ -1272,7 +1303,9 @@ async def welcomerole(interaction: discord.Interaction, role: discord.Role = Non
 @app_commands.describe(trigger="Word or phrase to trigger on", response="What the bot replies")
 @is_trusted()
 async def autoresponse(interaction: discord.Interaction, trigger: str, response: str):
-    AUTO_RESPONSES[trigger.lower()] = response
+    s = settings_for(interaction.guild_id)
+    s.auto_responses[trigger.lower()] = response
+    save_config(interaction.guild_id)
     await interaction.response.send_message(f"Auto-response added: `{trigger}` -> {response}", ephemeral=True)
 
 
@@ -1280,7 +1313,9 @@ async def autoresponse(interaction: discord.Interaction, trigger: str, response:
 @app_commands.describe(trigger="The trigger word to remove")
 @is_trusted()
 async def autoresponseremove(interaction: discord.Interaction, trigger: str):
-    removed = AUTO_RESPONSES.pop(trigger.lower(), None)
+    s = settings_for(interaction.guild_id)
+    removed = s.auto_responses.pop(trigger.lower(), None)
+    save_config(interaction.guild_id)
     await interaction.response.send_message(
         f"Removed `{trigger}`." if removed else f"`{trigger}` isn't an auto-response.",
         ephemeral=True,
@@ -1290,42 +1325,47 @@ async def autoresponseremove(interaction: discord.Interaction, trigger: str):
 @bot.tree.command(name="autoresponselist", description="List all auto-responses")
 @is_trusted()
 async def autoresponselist(interaction: discord.Interaction):
-    if not AUTO_RESPONSES:
+    s = settings_for(interaction.guild_id)
+    if not s.auto_responses:
         await interaction.response.send_message("No auto-responses set.", ephemeral=True)
         return
-    lines = "\n".join(f"`{k}` -> {v}" for k, v in AUTO_RESPONSES.items())
+    lines = "\n".join(f"`{k}` -> {v}" for k, v in s.auto_responses.items())
     await interaction.response.send_message(f"**Auto-responses:**\n{lines}", ephemeral=True)
 
 
 @bot.tree.command(name="badwords", description="Turn ON bad word filter (deletes messages with profanity)")
 @is_trusted()
 async def badwords_cmd(interaction: discord.Interaction):
-    global badwords_filter
-    badwords_filter = True
+    s = settings_for(interaction.guild_id)
+    s.badwords_filter = True
+    save_config(interaction.guild_id)
     await interaction.response.send_message("Bad word filter **ON** - profanity gets deleted.", ephemeral=True)
 
 
 @bot.tree.command(name="badwordsoff", description="Turn OFF bad word filter")
 @is_trusted()
 async def badwordsoff_cmd(interaction: discord.Interaction):
-    global badwords_filter
-    badwords_filter = False
+    s = settings_for(interaction.guild_id)
+    s.badwords_filter = False
+    save_config(interaction.guild_id)
     await interaction.response.send_message("Bad word filter **OFF**.", ephemeral=True)
 
 
 @bot.tree.command(name="antilink", description="Turn ON link blocking (all links blocked unless whitelisted)")
 @is_trusted()
 async def antilink_cmd(interaction: discord.Interaction):
-    global antilink
-    antilink = True
+    s = settings_for(interaction.guild_id)
+    s.antilink = True
+    save_config(interaction.guild_id)
     await interaction.response.send_message("Anti-link **ON** - links posted by non-whitelisted users get deleted.", ephemeral=True)
 
 
 @bot.tree.command(name="antilinkoff", description="Turn OFF link blocking")
 @is_trusted()
 async def antilinkoff_cmd(interaction: discord.Interaction):
-    global antilink
-    antilink = False
+    s = settings_for(interaction.guild_id)
+    s.antilink = False
+    save_config(interaction.guild_id)
     await interaction.response.send_message("Anti-link **OFF**.", ephemeral=True)
 
 
@@ -1333,9 +1373,11 @@ async def antilinkoff_cmd(interaction: discord.Interaction):
 @app_commands.describe(domain="Domain to allow")
 @is_trusted()
 async def linkwhitelist(interaction: discord.Interaction, domain: str):
-    LINK_WHITELIST.add(domain.lower())
+    s = settings_for(interaction.guild_id)
+    s.link_whitelist.add(domain.lower())
+    save_config(interaction.guild_id)
     await interaction.response.send_message(
-        f"`{domain.lower()}` added to link whitelist. Current: {', '.join(sorted(LINK_WHITELIST)) if LINK_WHITELIST else 'none'}",
+        f"`{domain.lower()}` added to link whitelist. Current: {', '.join(sorted(s.link_whitelist)) if s.link_whitelist else 'none'}",
         ephemeral=True,
     )
 
@@ -1344,9 +1386,11 @@ async def linkwhitelist(interaction: discord.Interaction, domain: str):
 @app_commands.describe(domain="Domain to remove")
 @is_trusted()
 async def linkwhitelistremove(interaction: discord.Interaction, domain: str):
-    LINK_WHITELIST.discard(domain.lower())
+    s = settings_for(interaction.guild_id)
+    s.link_whitelist.discard(domain.lower())
+    save_config(interaction.guild_id)
     await interaction.response.send_message(
-        f"`{domain.lower()}` removed. Current: {', '.join(sorted(LINK_WHITELIST)) if LINK_WHITELIST else 'none'}",
+        f"`{domain.lower()}` removed. Current: {', '.join(sorted(s.link_whitelist)) if s.link_whitelist else 'none'}",
         ephemeral=True,
     )
 
@@ -1355,24 +1399,28 @@ async def linkwhitelistremove(interaction: discord.Interaction, domain: str):
 @app_commands.describe(target="User or role to exempt")
 @is_trusted()
 async def whitelist(interaction: discord.Interaction, target: Union[discord.Member, discord.Role]):
+    s = settings_for(interaction.guild_id)
     if isinstance(target, discord.Role):
-        WHITELIST_ROLE_IDS.add(target.id)
+        s.whitelisted_roles.add(target.id)
         await interaction.response.send_message(f"{target.mention} role is now whitelisted.", ephemeral=True)
     else:
-        WHITELIST_USER_IDS.add(target.id)
+        s.whitelisted_users.add(target.id)
         await interaction.response.send_message(f"{target.mention} is now whitelisted.", ephemeral=True)
+    save_config(interaction.guild_id)
 
 
 @bot.tree.command(name="whitelistremove", description="Remove a user or role from the whitelist")
 @app_commands.describe(target="User or role to un-exempt")
 @is_trusted()
 async def whitelistremove(interaction: discord.Interaction, target: Union[discord.Member, discord.Role]):
+    s = settings_for(interaction.guild_id)
     if isinstance(target, discord.Role):
-        WHITELIST_ROLE_IDS.discard(target.id)
+        s.whitelisted_roles.discard(target.id)
         await interaction.response.send_message(f"{target.mention} role is no longer whitelisted.", ephemeral=True)
     else:
-        WHITELIST_USER_IDS.discard(target.id)
+        s.whitelisted_users.discard(target.id)
         await interaction.response.send_message(f"{target.mention} is no longer whitelisted.", ephemeral=True)
+    save_config(interaction.guild_id)
 
 
 config_group = app_commands.Group(name="config", description="Save, load or delete bot settings")
@@ -1381,7 +1429,7 @@ config_group = app_commands.Group(name="config", description="Save, load or dele
 @config_group.command(name="create", description="Save all current settings to a config file")
 @is_trusted()
 async def config_create(interaction: discord.Interaction):
-    save_config()
+    save_config(interaction.guild_id)
     await audit(interaction.guild, f":floppy_disk: Config saved by {interaction.user}")
     await interaction.response.send_message(
         f"Config saved to `{CONFIG_FILE}` - toggles, whitelists, welcome role, auto-responses, link whitelist and cleanup days.",
@@ -1421,7 +1469,7 @@ async def ticketadd(interaction: discord.Interaction, member: discord.Member):
         await interaction.response.send_message("Use this inside a ticket channel.", ephemeral=True)
         return
     guild = interaction.guild
-    cfg = TICKET_CONFIG
+    cfg = TICKET_CONFIG[interaction.guild_id]
     opener_id = None
     try:
         opener_id = int(channel.topic) if channel.topic else None
@@ -1450,26 +1498,26 @@ async def ticketadd(interaction: discord.Interaction, member: discord.Member):
 )
 @is_trusted()
 async def ticketsetup(interaction: discord.Interaction, open_category: discord.CategoryChannel, closed_category: discord.CategoryChannel, support_role: discord.Role, panel_channel: discord.TextChannel):
-    global TICKET_CONFIG
-    old_panel = TICKET_CONFIG.get("panel_message_id")
+    cfg = TICKET_CONFIG[interaction.guild_id]
+    old_panel = cfg.get("panel_message_id")
     if old_panel:
         try:
-            old_channel = interaction.guild.get_channel(TICKET_CONFIG.get("panel_channel_id"))
+            old_channel = interaction.guild.get_channel(cfg.get("panel_channel_id"))
             if old_channel is not None:
                 msg = await old_channel.fetch_message(old_panel)
                 await msg.delete()
         except discord.HTTPException:
             pass
-    TICKET_CONFIG = {
-        "guild_id": interaction.guild.id,
-        "open_category_id": open_category.id,
-        "closed_category_id": closed_category.id,
-        "support_role_id": support_role.id,
-        "panel_channel_id": panel_channel.id,
-        "panel_message_id": None,
-    }
+    cfg.clear()
+    cfg["guild_id"] = interaction.guild.id
+    cfg["open_category_id"] = open_category.id
+    cfg["closed_category_id"] = closed_category.id
+    cfg["support_role_id"] = support_role.id
+    cfg["panel_channel_id"] = panel_channel.id
+    cfg["panel_message_id"] = None
     msg = await panel_channel.send("\U0001f3ab **Need help?** Click the button below to open a ticket.", view=TicketView())
-    TICKET_CONFIG["panel_message_id"] = msg.id
+    cfg["panel_message_id"] = msg.id
+    save_config(interaction.guild_id)
     await audit(interaction.guild, f"\U0001f3ab Ticket system set up by {interaction.user}")
     await interaction.response.send_message(
         f"Ticket system set up. Panel posted in {panel_channel.mention}.\n"
@@ -1481,7 +1529,7 @@ async def ticketsetup(interaction: discord.Interaction, open_category: discord.C
 @bot.tree.command(name="ticketpanel", description="Repost the Open Ticket button panel (uses existing setup)")
 @is_trusted()
 async def ticketpanel(interaction: discord.Interaction):
-    cfg = TICKET_CONFIG
+    cfg = TICKET_CONFIG[interaction.guild_id]
     if not cfg or cfg.get("guild_id") != interaction.guild.id:
         await interaction.response.send_message("Tickets aren't set up yet. Run /ticketsetup first.", ephemeral=True)
         return
@@ -1505,8 +1553,9 @@ async def ticketpanel(interaction: discord.Interaction):
 @app_commands.describe(channel="Channel for logs")
 @is_trusted()
 async def auditlog(interaction: discord.Interaction, channel: discord.TextChannel):
-    global audit_channel_id
-    audit_channel_id = channel.id
+    s = settings_for(interaction.guild_id)
+    s.audit_channel_id = channel.id
+    save_config(interaction.guild_id)
     await interaction.response.send_message(f"Audit log set to {channel.mention}.", ephemeral=True)
 
 
@@ -1543,10 +1592,11 @@ async def restore(interaction: discord.Interaction):
 @app_commands.describe(days="Days (0 disables auto-cleanup)")
 @is_trusted()
 async def cleanupdays(interaction: discord.Interaction, days: int):
-    global ROOM_INACTIVE_DAYS
-    ROOM_INACTIVE_DAYS = max(0, min(days, 365))
+    s = settings_for(interaction.guild_id)
+    s.room_inactive_days = max(0, min(days, 365))
+    save_config(interaction.guild_id)
     await interaction.response.send_message(
-        f"Room auto-cleanup: rooms inactive for **{ROOM_INACTIVE_DAYS}** days get deleted (checked every 12h)." if ROOM_INACTIVE_DAYS else "Room auto-cleanup **OFF**.",
+        f"Room auto-cleanup: rooms inactive for **{s.room_inactive_days}** days get deleted (checked every 12h)." if s.room_inactive_days else "Room auto-cleanup **OFF**.",
         ephemeral=True,
     )
 
@@ -1565,19 +1615,20 @@ async def cleanuprooms(interaction: discord.Interaction):
 @bot.tree.command(name="raidstatus", description="Show all protection settings")
 @is_trusted()
 async def raidstatus(interaction: discord.Interaction):
+    s = settings_for(interaction.guild_id)
     await interaction.response.send_message(
-        f"Raid mode: {'**ACTIVE** - server locked' if raiding else 'off'}\n"
-        f"Channel raid protection: {'**ON**' if channel_raid_protection else '**OFF**'}\n"
-        f"Spam detection: {'**ON**' if spam_detection else '**OFF**'} ({spam_count} msgs / {spam_window}s -> mute {spam_mute_minutes}min, ban after {spam_ban_offenses} offenses)\n"
-        f"Raid slowmode: {'**ON** (' + str(RAID_SLOWMODE) + 's)' if RAID_SLOWMODE else '**OFF**'}\n"
-        f"AI channel: {f'<#{AI_CHANNEL_ID}>' if AI_CHANNEL_ID else 'anywhere'}\n"
-        f"Anti-bot: {'**ON**' if antibot else '**OFF**'}\n"
-        f"Bad word filter: {'**ON**' if badwords_filter else '**OFF**'}\n"
-        f"Anti-link: {'**ON**' if antilink else '**OFF**'}\n"
-        f"Welcome role: {'**set**' if WELCOME_ROLE_ID else 'off'}\n"
-        f"Whitelisted: {len(WHITELIST_USER_IDS)} users, {len(WHITELIST_ROLE_IDS)} roles\n"
-        f"Auto-responses: {len(AUTO_RESPONSES)}\n"
-        f"Room auto-cleanup: {'**ON** (' + str(ROOM_INACTIVE_DAYS) + ' days)' if ROOM_INACTIVE_DAYS else '**OFF**'}\n"
+        f"Raid mode: {'**ACTIVE** - server locked' if s.raiding else 'off'}\n"
+        f"Channel raid protection: {'**ON**' if s.channel_raid_protection else '**OFF**'}\n"
+        f"Spam detection: {'**ON**' if s.spam_detection else '**OFF**'} ({s.spam_count} msgs / {s.spam_window}s -> mute {s.spam_mute_minutes}min, ban after {s.spam_ban_offenses} offenses)\n"
+        f"Raid slowmode: {'**ON** (' + str(s.raid_slowmode) + 's)' if s.raid_slowmode else '**OFF**'}\n"
+        f"AI channel: {f'<#{s.ai_channel_id}>' if s.ai_channel_id else 'anywhere'}\n"
+        f"Anti-bot: {'**ON**' if s.antibot else '**OFF**'}\n"
+        f"Bad word filter: {'**ON**' if s.badwords_filter else '**OFF**'}\n"
+        f"Anti-link: {'**ON**' if s.antilink else '**OFF**'}\n"
+        f"Welcome role: {'**set**' if s.welcome_role_id else 'off'}\n"
+        f"Whitelisted: {len(s.whitelisted_users)} users, {len(s.whitelisted_roles)} roles\n"
+        f"Auto-responses: {len(s.auto_responses)}\n"
+        f"Room auto-cleanup: {'**ON** (' + str(s.room_inactive_days) + ' days)' if s.room_inactive_days else '**OFF**'}\n"
         f"Join trigger: {RAID_JOIN_COUNT}+ joins in {RAID_JOIN_WINDOW}s | Channel trigger: {CHANNEL_CREATE_COUNT}+ channels in {CHANNEL_CREATE_WINDOW}s",
         ephemeral=True,
     )
@@ -2505,10 +2556,11 @@ ai_group = app_commands.Group(name="ai", description="AI commands")
 
 @ai_group.command(name="chat", description="Ask the AI assistant anything")
 async def ai_chat_cmd(interaction: discord.Interaction, message: str):
-    if AI_CHANNEL_ID and interaction.channel_id != AI_CHANNEL_ID and not is_whitelisted(interaction.user):
-        chan = interaction.guild.get_channel(AI_CHANNEL_ID) if interaction.guild else None
+    s = settings_for(interaction.guild_id)
+    if s.ai_channel_id and interaction.channel_id != s.ai_channel_id and not is_whitelisted(interaction.user):
+        chan = interaction.guild.get_channel(s.ai_channel_id) if interaction.guild else None
         await interaction.response.send_message(
-            f"/ai chat can only be used in {chan.mention if chan else f'<#{AI_CHANNEL_ID}>'}.",
+            f"/ai chat can only be used in {chan.mention if chan else f'<#{s.ai_channel_id}>'}.",
             ephemeral=True,
         )
         return
@@ -2554,9 +2606,9 @@ setup_group = app_commands.Group(name="setup", description="Server setup command
 @setup_group.command(name="ai", description="Restrict /ai to a specific channel (no channel = anywhere)")
 @is_trusted()
 async def setup_ai(interaction: discord.Interaction, channel: discord.TextChannel = None):
-    global AI_CHANNEL_ID
-    AI_CHANNEL_ID = channel.id if channel else None
-    save_config()
+    s = settings_for(interaction.guild_id)
+    s.ai_channel_id = channel.id if channel else None
+    save_config(interaction.guild_id)
     if channel:
         await interaction.response.send_message(f"/ai is now restricted to {channel.mention}.", ephemeral=True)
     else:
