@@ -750,20 +750,6 @@ async def on_message(message):
                 pass
             break
 
-    if AI_ENABLED and AI_CHANNEL_ID and message.channel.id == AI_CHANNEL_ID:
-        async with message.channel.typing():
-            text, err = await ai_generate(content, message.author.id)
-        if err:
-            try:
-                await message.reply(f":warning: AI error: {fit(err, 300)}")
-            except discord.HTTPException:
-                pass
-        else:
-            try:
-                await message.reply(fit(text))
-            except discord.HTTPException:
-                pass
-
 
 @bot.tree.command(name="room", description="Create a private channel only for specific people")
 @app_commands.describe(
@@ -1339,20 +1325,11 @@ async def ai(interaction: discord.Interaction, message: str):
         await interaction.followup.send(fit(text))
 
 
-@bot.tree.command(name="aichat", description="Make the AI reply to every message in a channel (run with no channel = off)")
+@bot.tree.command(name="aichat", description="Make the AI reply to every message in a channel")
 @app_commands.describe(channel="Channel for AI chat")
 @is_trusted()
 async def aichat(interaction: discord.Interaction, channel: discord.TextChannel = None):
-    global AI_CHANNEL_ID
-    if channel is None:
-        AI_CHANNEL_ID = None
-        await interaction.response.send_message("AI chat mode **OFF**.", ephemeral=True)
-        return
-    if not AI_ENABLED:
-        await interaction.response.send_message("AI isn't enabled. Set the AI_API_KEY variable first.", ephemeral=True)
-        return
-    AI_CHANNEL_ID = channel.id
-    await interaction.response.send_message(f"AI chat enabled in {channel.mention} - it will reply to every message there.", ephemeral=True)
+    await interaction.response.send_message("AI chat mode is currently **disabled**. Only `/ai` works for now.", ephemeral=True)
 
 
 @bot.tree.command(name="auditlog", description="Set which channel receives the bot's audit log")
