@@ -58,6 +58,10 @@ SPAM_WINDOW = 5
 SPAM_COUNT = 5
 MESSAGE_LOG = defaultdict(lambda: deque(maxlen=100))
 
+HOURLY_LIMIT = 10
+HOURLY_WINDOW = 3600
+HOURLY_LOG = defaultdict(lambda: deque(maxlen=200))
+
 DISCORD_INVITE_RE = re.compile(
     r"(?:discord\.(?:gg|com|app|io|me|li|gift|new)/|discordapp\.com/invite/|dsc\.gg/|dis\.gg/|\b[\w-]+\.gg/)[^\s]*",
     re.IGNORECASE,
@@ -693,6 +697,22 @@ async def on_message(message):
                         reason="Spam detection",
                     )
                     await message.channel.send(f":mute: **{message.author}** muted for spamming.")
+                except discord.HTTPException:
+                    pass
+
+        if content.strip():
+            now = time.monotonic()
+            hlog = HOURLY_LOG[message.author.id]
+            hlog.append(now)
+            fresh = [t for t in hlog if now - t <= HOURLY_WINDOW]
+            HOURLY_LOG[message.author.id] = deque(fresh, maxlen=200)
+            if len(fresh) > HOURLY_LIMIT:
+                try:
+                    await message.delete()
+                    await message.channel.send(
+                        f"{message.author.mention}, you've reached the **{HOURLY_LIMIT} messages/hour** limit.",
+                        delete_after=5,
+                    )
                 except discord.HTTPException:
                     pass
 
