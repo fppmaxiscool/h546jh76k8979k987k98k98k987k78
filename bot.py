@@ -1687,6 +1687,7 @@ ADMIN_SYSTEM = (
     "moderate members (ban, kick, timeout, unban, set nickname), manage roles (create, rename, delete, "
     "grant/remove to members, set role permissions list_roles create_role rename_role delete_role set_role_permissions grant_role remove_role), "
     "manage channels (create, rename, delete, set slowmode) and send or purge messages in channels. "
+    "read_messages lets you read the most recent messages in a channel or thread so you can see conversation context and reply to people. "
     "set_role_permissions can change ANY Discord permission including administrator and mention_everyone; "
     "use '-' prefix to revoke a permission, bare or '+' to grant. "
     "set_channel_permissions sets per-channel overrides for a role or member; get_role_permissions shows a role's current perms."
@@ -1823,6 +1824,26 @@ async def run_admin_tool(guild, name, args):
             for c in guild.channels[:40]
         ]
         return "\n".join(lines) or "No channels."
+    if name == "read_messages":
+        channel, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            return "read_messages only works on text channels and threads."
+        limit = max(1, min(int(args.get("limit") or 5), 30))
+        try:
+            msgs = [m async for m in channel.history(limit=limit)]
+        except discord.HTTPException as e:
+            return f"Could not read channel: {e}"
+        if not msgs:
+            return f"No recent messages in {channel.name}."
+        lines = [
+            f"[{m.created_at.strftime('%H:%M')}] {m.author.name} (id={m.author.id}): {m.content}" + (
+                " [embed]" if m.embeds else ""
+            ) + (" [attachment]" if m.attachments else "") + (" [reply]" if m.reference else "")
+            for m in reversed(msgs)
+        ]
+        return f"Recent messages in #{channel.name}:\n" + "\n".join(lines)
     if name == "server_stats":
         bots = sum(1 for m in guild.members if m.bot)
         return (
@@ -2513,6 +2534,21 @@ ADMIN_TOOLS = [
                     "text": {"type": "string"},
                 },
                 "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_messages",
+            "description": "Read the most recent messages in a text channel or thread (max 30) so you can see what people said and reply to it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 30, "description": "How many recent messages to read"},
+                },
             },
         },
     },
