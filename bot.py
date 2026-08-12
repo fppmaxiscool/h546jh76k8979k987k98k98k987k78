@@ -1735,6 +1735,31 @@ async def run_admin_tool(guild, name, args):
             f"Roles: {len(guild.roles)} | Boosts: {guild.premium_subscription_count}\n"
             f"Owner: {guild.owner} (id={guild.owner_id})"
         )
+    if name == "member_info":
+        member, err = resolve_member_arg(guild, args)
+        if err:
+            return err
+        timeout = f"active until {member.timeout_until.strftime('%Y-%m-%d %H:%M')} UTC" if member.is_timed_out() else "none"
+        roles = ", ".join(f"{r.name} (id={r.id})" for r in member.roles if not r.is_default())[:1500]
+        premium = "booster" if member.premium_since else "not a booster"
+        return (
+            f"id={member.id} | {member.name} (display: {member.display_name}) | bot: {member.bot}\n"
+            f"Joined: {member.joined_at.strftime('%Y-%m-%d') if member.joined_at else 'unknown'}\n"
+            f"Timeout: {timeout}\n"
+            f"Booster: {premium}\n"
+            f"Roles: {roles or 'none'}"
+        )
+    if name == "list_timeouts":
+        timed_out = [m for m in guild.members if m.is_timed_out()]
+        if not timed_out:
+            return "No members are currently timed out."
+        lines = [
+            f"- {m.name} (id={m.id}) until {m.timeout_until.strftime('%Y-%m-%d %H:%M')} UTC"
+            for m in timed_out[:30]
+        ]
+        if len(timed_out) > 30:
+            lines.append(f"... and {len(timed_out) - 30} more")
+        return "Members currently timed out:\n" + "\n".join(lines)
     if name == "list_roles":
         lines = [
             f"- id={r.id} | {r.name} | color: #{r.color.value:06x} | hoist: {r.hoist} | mentionable: {r.mentionable}"
@@ -2044,6 +2069,29 @@ ADMIN_TOOLS = [
                 },
                 "required": ["member_id", "minutes"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "member_info",
+            "description": "Get full info about a member: roles, timeout status, join date, booster status.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Member name as alternative to member_id"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_timeouts",
+            "description": "List all members currently timed out, with their timeout expiry times.",
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
