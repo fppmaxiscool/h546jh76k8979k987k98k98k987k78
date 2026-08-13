@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import difflib
 import json
 import os
 import re
@@ -48,9 +49,13 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 RAID_JOIN_WINDOW = 10
-RAID_JOIN_COUNT = 6
-JOIN_LOG = deque(maxlen=200)
+RAID_JOIN_COUNT = 1000
+JOIN_LOG = deque(maxlen=5000)
 RAID_JOIN_BUFFER = 60
+RAID_WARN_COUNT = 500
+RAID_UNLOCK_AFTER = 300
+RAID_BAN_ACCOUNT_AGE = 3600
+RAID_RETRIGGER_COOLDOWN = 60
 
 CHANNEL_CREATE_WINDOW = 3
 CHANNEL_CREATE_COUNT = 4
@@ -114,7 +119,7 @@ BAD_WORDS = [
     "trailer park trash", "mayo monkey", "mayomuncher", "peckerwood", "pecker wood",
     "white nigger", "whitenigger", "snowflake nigger", "vanilla face", "cracka", "crackah",
     "charlie", "carlton", "black camp", "gyppo", "gippo", "gyp", "gypo", "gypsy scum",
-    "pikey", "pikeys", "pikey scum", "chav", "chavs", "scally", "scallies", "ned", "neds",
+    "pikey", "pikeys", "pikey scum", "chav", "chavs", "scally", "scallies",
     "commie", "commies", "commie cunt", "communist pig", "soviet pig", "ruski", "rusky", "ruskie",
     "bolshevik scum", "gabacho", "gabacha", "gusano", "faggot", "faggots", "faggotry",
     "faggotfuck", "fagbag", "fagbait", "fagbreath", "fagbutt", "fagfuck", "fagfucker",
@@ -276,6 +281,10 @@ class GuildSettings:
         self.antibot = True
         self.badwords_filter = True
         self.antilink = True
+        self.raid_auto_unlock = True
+        self.raid_ban_new_accounts = True
+        self.last_raid_at = 0.0
+        self.auto_unlock_task = False
 
 
 SETTINGS = defaultdict(GuildSettings)
@@ -374,6 +383,8 @@ def save_config(guild_id):
         "antibot": s.antibot,
         "badwords_filter": s.badwords_filter,
         "antilink": s.antilink,
+        "raid_auto_unlock": s.raid_auto_unlock,
+        "raid_ban_new_accounts": s.raid_ban_new_accounts,
         "welcome_role_id": s.welcome_role_id,
         "auto_responses": s.auto_responses,
         "link_whitelist": sorted(s.link_whitelist),
@@ -405,6 +416,8 @@ def load_config():
         s.antibot = g.get("antibot", True)
         s.badwords_filter = g.get("badwords_filter", True)
         s.antilink = g.get("antilink", True)
+        s.raid_auto_unlock = g.get("raid_auto_unlock", True)
+        s.raid_ban_new_accounts = g.get("raid_ban_new_accounts", True)
         s.welcome_role_id = g.get("welcome_role_id")
         s.auto_responses = dict(g.get("auto_responses", {}))
         s.link_whitelist = set(g.get("link_whitelist", []))
@@ -474,7 +487,11 @@ async def lockdown_guild(guild):
         original = channel.overwrites_for(default_role)
         tasks.append(
             channel.set_permissions(
-                default_role, send_messages=False, connect=False, reason="Raid lockdown"
+                default_role,
+                send_messages=False,
+                connect=False,
+                create_instant_invite=False,
+                reason="Raid lockdown",
             )
         )
         s.locked_channels.append((channel.id, original))
@@ -519,8 +536,14 @@ async def unlock_guild(guild):
 
 async def trigger_raid(guild, reason):
     s = settings_for(guild.id)
+    if s.raiding:
+        return
+    now = time.monotonic()
+    if now - s.last_raid_at < RAID_RETRIGGER_COOLDOWN:
+        return
+    s.last_raid_at = now
     s.raiding = True
-    await announce(guild, f":rotating_light: **RAID DETECTED** ({reason}). Locking down the server. New joins will be kicked until it is safe.")
+    await announce(guild, f":rotating_light: **RAID DETECTED** ({reason}). Locking down the server. New joins will be removed until it is safe.")
     await audit(guild, f":rotating_light: RAID triggered: {reason}")
     await lockdown_guild(guild)
     if s.raid_slowmode > 0:
@@ -531,6 +554,35 @@ async def trigger_raid(guild, reason):
                     await ch.edit(slowmode_delay=s.raid_slowmode, reason="Raid lockdown slowmode")
             except discord.HTTPException:
                 pass
+    if s.raid_auto_unlock and not s.auto_unlock_task:
+        s.auto_unlock_task = True
+        asyncio.create_task(auto_unlock_guild(guild))
+
+
+async def auto_unlock_guild(guild):
+    while True:
+        await asyncio.sleep(RAID_UNLOCK_AFTER)
+        s = settings_for(guild.id)
+        if not s.raiding:
+            s.auto_unlock_task = False
+            return
+        now = time.monotonic()
+        flood = [
+            m for t, m in JOIN_LOG
+            if now - t <= RAID_JOIN_WINDOW and m.guild.id == guild.id
+        ]
+        if len(flood) >= RAID_WARN_COUNT:
+            await announce(
+                guild,
+                f":rotating_light: Still under attack ({len(flood)} recent joins). Keeping lockdown for another {RAID_UNLOCK_AFTER}s.",
+            )
+            continue
+        await unlock_guild(guild)
+        s.raiding = False
+        s.auto_unlock_task = False
+        await announce(guild, ":white_check_mark: Server unlocked - the raid has been contained.")
+        await audit(guild, ":white_check_mark: Raid contained - server unlocked automatically")
+        return
 
 
 def serialize_overwrites(channel):
@@ -830,6 +882,21 @@ async def on_member_join(member):
                 pass
         return
 
+    if s.raiding:
+        fresh_account = (
+            member.created_at is not None
+            and (time.time() - member.created_at.timestamp()) < RAID_BAN_ACCOUNT_AGE
+        )
+        try:
+            if s.raid_ban_new_accounts and fresh_account:
+                await member.ban(reason=f"New account joining during raid lockdown (age < {RAID_BAN_ACCOUNT_AGE}s)")
+                await audit(member.guild, f":hammer: Banned new account **{member.name} ({member.id})** during raid")
+            else:
+                await member.kick(reason="Join during raid lockdown")
+        except discord.HTTPException:
+            pass
+        return
+
     if s.welcome_role_id:
         role = member.guild.get_role(s.welcome_role_id)
         if role is not None:
@@ -838,19 +905,31 @@ async def on_member_join(member):
             except discord.HTTPException:
                 pass
 
-    if s.raiding:
-        try:
-            await member.kick(reason="Join during raid lockdown")
-        except discord.HTTPException:
-            pass
-        return
-
     now = time.monotonic()
     JOIN_LOG.append((now, member))
-    recent = [m for t, m in JOIN_LOG if now - t <= RAID_JOIN_BUFFER]
+    recent = [m for t, m in JOIN_LOG if now - t <= RAID_JOIN_BUFFER and m.guild.id == member.guild.id]
     fresh = [m for t, m in recent if (now - t) <= RAID_JOIN_WINDOW]
     if len(fresh) >= RAID_JOIN_COUNT:
         await trigger_raid(member.guild, f"{len(fresh)} joins in {RAID_JOIN_WINDOW}s")
+    elif len(fresh) >= RAID_WARN_COUNT and not s.raiding and now - s.last_raid_at > RAID_RETRIGGER_COOLDOWN:
+        s.last_raid_at = now
+        await announce(
+            member.guild,
+            f":warning: **Possible raid forming** - {len(fresh)} joins in {RAID_JOIN_WINDOW}s. Raising security. More than {RAID_JOIN_COUNT} triggers a full lockdown.",
+        )
+        await audit(member.guild, f":warning: Raid warning: {len(fresh)} joins in {RAID_JOIN_WINDOW}s")
+        try:
+            await member.guild.edit(verification_level=discord.VerificationLevel.high, reason="Raid warning: verification raised")
+        except discord.HTTPException:
+            pass
+        if s.raid_slowmode > 0:
+            for ch in member.guild.text_channels:
+                try:
+                    if ch.slowmode_delay != s.raid_slowmode:
+                        s.raid_slowmode_saved[ch.id] = ch.slowmode_delay
+                        await ch.edit(slowmode_delay=s.raid_slowmode, reason="Raid warning slowmode")
+                except discord.HTTPException:
+                    pass
 
 
 @bot.event
@@ -1630,7 +1709,9 @@ async def raidstatus(interaction: discord.Interaction):
         f"Whitelisted: {len(s.whitelisted_users)} users, {len(s.whitelisted_roles)} roles\n"
         f"Auto-responses: {len(s.auto_responses)}\n"
         f"Room auto-cleanup: {'**ON** (' + str(s.room_inactive_days) + ' days)' if s.room_inactive_days else '**OFF**'}\n"
-        f"Join trigger: {RAID_JOIN_COUNT}+ joins in {RAID_JOIN_WINDOW}s | Channel trigger: {CHANNEL_CREATE_COUNT}+ channels in {CHANNEL_CREATE_WINDOW}s",
+        f"Auto-unlock: {'**ON** (' + str(RAID_UNLOCK_AFTER) + 's after the flood stops)' if s.raid_auto_unlock else '**OFF**'}\n"
+        f"New-account ban during raid: {'**ON** (<1h old accounts get banned, not kicked)' if s.raid_ban_new_accounts else '**OFF**'}\n"
+        f"Join triggers: {RAID_WARN_COUNT}+ joins in {RAID_JOIN_WINDOW}s = warning, {RAID_JOIN_COUNT}+ = lockdown | Channel trigger: {CHANNEL_CREATE_COUNT}+ channels in {CHANNEL_CREATE_WINDOW}s",
         ephemeral=True,
     )
 
@@ -2202,6 +2283,15 @@ async def run_admin_tool(guild, name, args):
             return "Provide a query."
         matches = [m for m in guild.members if q in m.name.lower() or q in (m.display_name or m.name).lower() or q == str(m.id)]
         if not matches:
+            fuzzy = difflib.get_close_matches(
+                q,
+                [m.name.lower() for m in guild.members] + [(m.display_name or m.name).lower() for m in guild.members],
+                n=10,
+                cutoff=0.6,
+            )
+            if fuzzy:
+                matches = [m for m in guild.members if m.name.lower() in fuzzy or (m.display_name or m.name).lower() in fuzzy]
+        if not matches:
             return "No members found."
         lines = [
             f"- id={m.id} | {m.name} | display: {m.display_name} | bot: {m.bot}"
@@ -2327,6 +2417,60 @@ async def run_admin_tool(guild, name, args):
         await target.edit(name=new, reason="AI admin: rename role")
         await audit(guild, f":label: AI admin renamed role (id={target.id}) to **{new}**")
         return f"Renamed role (id={target.id}) to **{new}**."
+    if name == "edit_role":
+        target, err = resolve_role(guild, args.get("role_id"), args.get("query"))
+        if err:
+            return err
+        kwargs = {}
+        if args.get("name"):
+            kwargs["name"] = (args.get("name") or "").strip()[:32]
+        if args.get("color") is not None:
+            color = parse_color(args.get("color"))
+            if color is None:
+                return f"Invalid color **{args.get('color')}** - use hex like #FF0000 or ff0000."
+            kwargs["color"] = color
+        if args.get("hoist") is not None:
+            kwargs["hoist"] = bool(args.get("hoist"))
+        if args.get("mentionable") is not None:
+            kwargs["mentionable"] = bool(args.get("mentionable"))
+        if args.get("icon_url"):
+            try:
+                import aiohttp
+                async with aiohttp.ClientSession() as s:
+                    async with s.get(args["icon_url"]) as r:
+                        kwargs["display_icon"] = await r.read()
+            except (OSError, aiohttp.ClientError, ValueError):
+                return f"Could not fetch icon from {args['icon_url']}."
+        if not kwargs:
+            return "Provide name, color, hoist, mentionable or icon_url."
+        try:
+            await target.edit(**kwargs, reason="AI admin: edit role")
+        except discord.HTTPException as e:
+            return f"Failed to edit role: {e}"
+        changed = ", ".join(kwargs.keys())
+        await audit(guild, f":label: AI admin edited role **{target.name}** ({changed})")
+        return f"Edited role **{target.name}** (id={target.id}): {changed}."
+    if name == "set_role_position":
+        target, err = resolve_role(guild, args.get("role_id"), args.get("query"))
+        if err:
+            return err
+        if target.is_default() or target.is_bot_managed() or target == guild.premium_subscriber_role:
+            return "Refused: cannot move that role."
+        position = args.get("position")
+        direction = (args.get("direction") or "").lower().strip()
+        try:
+            roles = sorted(guild.roles, key=lambda r: r.position, reverse=True)
+            idx = roles.index(target)
+            if direction in ("up", "down"):
+                new_idx = max(0, min(len(roles) - 1, idx + (1 if direction == "up" else -1)))
+            elif position is not None:
+                new_idx = max(1, min(len(roles) - 1, int(position)))
+            else:
+                return "Provide a position (number) or direction (up/down)."
+            await target.edit(position=roles[new_idx].position, reason="AI admin: set role position")
+        except (ValueError, discord.HTTPException) as e:
+            return f"Failed to move role: {e}"
+        return f"Moved role **{target.name}** {'up' if new_idx < idx else 'down'} (new index {new_idx} of {len(roles) - 1})."
     if name == "delete_role":
         target, err = resolve_role(guild, args.get("role_id"), args.get("query"))
         if err:
@@ -3353,6 +3497,43 @@ ADMIN_TOOLS = [
                 "type": "object",
                 "properties": {
                     "count": {"type": "integer", "description": "How many entries (max 25)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_role",
+            "description": "Edit a role: name, color (hex like #FF0000), hoist (show separately), mentionable, or icon (image URL).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Role name as alternative to role_id"},
+                    "name": {"type": "string"},
+                    "color": {"type": "string", "description": "Hex color, e.g. #FF0000"},
+                    "hoist": {"type": "boolean"},
+                    "mentionable": {"type": "boolean"},
+                    "icon_url": {"type": "string"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_role_position",
+            "description": "Move a role up/down the hierarchy (direction: up/down) or to an absolute position (number).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Role name as alternative to role_id"},
+                    "direction": {"type": "string", "description": "'up' or 'down'"},
+                    "position": {"type": "integer", "description": "Absolute position index"},
                 },
                 "required": [],
             },
