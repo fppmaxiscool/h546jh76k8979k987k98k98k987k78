@@ -848,7 +848,7 @@ async def on_ready():
     if load_config():
         print("Loaded config from bot-config.json")
     load_stats()
-    for gid in (1536762391851696199, 1521614024587083908, 1532457300973981777, 1530550124906807366, 1529208877940212062):
+    for gid in (1536762391851696199, 1521614024587083908, 1532457300973981777, 1530550124906807366, 1529208877940212062, 1528149700765548726):
         guild = discord.Object(id=gid)
         bot.tree.copy_global_to(guild=guild)
         await bot.tree.sync(guild=guild)
