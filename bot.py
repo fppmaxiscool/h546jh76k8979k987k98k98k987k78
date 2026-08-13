@@ -2685,7 +2685,7 @@ async def ai_admin_generate(prompt, interaction):
     for role, text in memory:
         messages.append({"role": role, "content": text})
     messages.append({"role": "user", "content": prompt})
-    for _ in range(6):
+    while True:
         data = await ai_call(messages, tools=ADMIN_TOOLS)
         if isinstance(data, str):
             return data
@@ -2702,13 +2702,14 @@ async def ai_admin_generate(prompt, interaction):
                 except discord.HTTPException as e:
                     result = f"Discord error: {e}"
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+            if sum(len(m.get("content") or str(m.get("tool_calls") or "")) for m in messages) > 1_000_000:
+                return "Context window is full from tool use - stopping before the API rejects the request."
             continue
         reply = (data.get("content") or "Done.").strip()
         reply = reply.replace("@everyone", "everyone").replace("@here", "here")
         memory.append(("user", prompt))
         memory.append(("assistant", reply))
         return fit(reply)
-    return "That required too many steps - I stopped. Try a simpler request."
 
 
 async def ai_juiced_generate(prompt, interaction):
@@ -2719,7 +2720,7 @@ async def ai_juiced_generate(prompt, interaction):
     for role, text in memory:
         messages.append({"role": role, "content": text})
     messages.append({"role": "user", "content": prompt})
-    for _ in range(6):
+    while True:
         data = await ai_call(messages, tools=ADMIN_TOOLS)
         if isinstance(data, str):
             return data
@@ -2736,13 +2737,14 @@ async def ai_juiced_generate(prompt, interaction):
                 except discord.HTTPException as e:
                     result = f"Discord error: {e}"
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+            if sum(len(m.get("content") or str(m.get("tool_calls") or "")) for m in messages) > 1_000_000:
+                return "Context window is full from tool use - stopping before the API rejects the request."
             continue
         reply = (data.get("content") or "Done.").strip()
         reply = reply.replace("@everyone", "everyone").replace("@here", "here")
         memory.append(("user", prompt))
         memory.append(("assistant", reply))
         return fit(reply)
-    return "That required too many steps - I stopped. Try a simpler request."
 
 
 ADMIN_TOOLS = [
@@ -3389,20 +3391,36 @@ async def ai_chat_cmd(interaction: discord.Interaction, message: str):
     await interaction.followup.send(reply)
 
 
+async def _ai_post_background(interaction, coro):
+    try:
+        reply = await coro
+    except Exception as e:
+        reply = f"Something went wrong mid-task: {type(e).__name__}: {e}"
+    try:
+        await interaction.channel.send(f"{interaction.user.mention} {reply}")
+    except discord.HTTPException as e:
+        try:
+            await interaction.followup.send(f"Could not post the result here: {e}")
+        except discord.HTTPException:
+            pass
+
+
 @ai_group.command(name="admin", description="AI admin: view members and moderate (ban/kick/timeout)")
 @is_trusted()
 async def ai_admin_cmd(interaction: discord.Interaction, message: str):
-    await interaction.response.defer()
-    reply = await ai_admin_generate(message, interaction)
-    await interaction.followup.send(reply)
+    await interaction.response.send_message(
+        "working on it — I'll post the result in this channel when done."
+    )
+    asyncio.create_task(_ai_post_background(interaction, ai_admin_generate(message, interaction)))
 
 
 @ai_group.command(name="juiced", description="AI admin with the [CATT]vk persona")
 @is_trusted()
 async def ai_juiced_cmd(interaction: discord.Interaction, message: str):
-    await interaction.response.defer()
-    reply = await ai_juiced_generate(message, interaction)
-    await interaction.followup.send(reply)
+    await interaction.response.send_message(
+        "working on it — I'll post the result in this channel when done."
+    )
+    asyncio.create_task(_ai_post_background(interaction, ai_juiced_generate(message, interaction)))
 
 
 bot.tree.add_command(ai_group)
