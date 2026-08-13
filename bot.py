@@ -2417,18 +2417,18 @@ async def run_admin_tool(guild, name, args):
         if not cname:
             return "Provide a channel name."
         ctype = (args.get("type") or "text").lower()
-        ct = {
-            "text": discord.ChannelType.text,
-            "voice": discord.ChannelType.voice,
-            "category": discord.ChannelType.category,
-        }.get(ctype)
-        if ct is None:
+        if ctype not in ("text", "voice", "category"):
             return "Channel type must be text, voice or category."
         cat = None
         if args.get("category"):
             cat = next((c for c in guild.categories if c.name.lower() == args["category"].lower()), None)
         try:
-            ch = await guild.create_channel(name=cname, channel_type=ct, category=cat, reason="AI admin: create channel")
+            if ctype == "voice":
+                ch = await guild.create_voice_channel(name=cname, category=cat, reason="AI admin: create channel")
+            elif ctype == "category":
+                ch = await guild.create_category(name=cname, reason="AI admin: create channel")
+            else:
+                ch = await guild.create_text_channel(name=cname, category=cat, reason="AI admin: create channel")
         except discord.HTTPException as e:
             return f"Failed to create channel: {e}"
         await audit(guild, f":construction: AI admin created channel **#{ch.name}** (id={ch.id})")
