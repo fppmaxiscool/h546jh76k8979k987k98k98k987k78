@@ -6,6 +6,7 @@ import os
 import re
 import time
 from collections import defaultdict, deque
+from io import BytesIO
 from typing import Union
 
 import aiohttp
@@ -316,6 +317,10 @@ CLEANUP_INTERVAL = 12 * 3600
 
 MESSAGE_STATS = defaultdict(int)
 
+SCHEDULED_MESSAGES = defaultdict(list)
+
+REACTION_ROLES = defaultdict(dict)
+
 
 def is_trusted():
     async def predicate(interaction: discord.Interaction):
@@ -393,6 +398,7 @@ def save_config(guild_id):
         "room_inactive_days": s.room_inactive_days,
         "audit_channel_id": s.audit_channel_id,
         "ticket": dict(TICKET_CONFIG.get(guild_id, {})),
+        "reaction_roles": {str(k): v for k, v in REACTION_ROLES.get(guild_id, {}).items()},
     }
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
@@ -425,6 +431,8 @@ def load_config():
         s.whitelisted_roles = set(g.get("whitelist_roles", []))
         s.room_inactive_days = g.get("room_inactive_days", 14)
         s.audit_channel_id = g.get("audit_channel_id")
+        if g.get("reaction_roles"):
+            REACTION_ROLES[int(gid)] = {int(k): v for k, v in g["reaction_roles"].items()}
         if g.get("ticket"):
             TICKET_CONFIG[int(gid)] = g["ticket"]
     return True
@@ -843,6 +851,32 @@ async def room_cleanup_loop():
         await asyncio.sleep(CLEANUP_INTERVAL)
 
 
+async def scheduler_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        now = time.monotonic()
+        for guild_id in list(SCHEDULED_MESSAGES):
+            due = [x for x in SCHEDULED_MESSAGES[guild_id] if x[0] <= now]
+            for item in due:
+                send_at, channel_id, text, repeat = item
+                channel = bot.get_channel(channel_id)
+                if channel is not None:
+                    try:
+                        await channel.send(scrub_mentions(text))
+                        g = bot.get_guild(guild_id)
+                        if g is not None:
+                            await audit(g, f":clock10: Scheduled message delivered to #{channel.name}")
+                    except discord.HTTPException:
+                        pass
+            if due:
+                remaining = [x for x in SCHEDULED_MESSAGES[guild_id] if x[0] > now]
+                for send_at, channel_id, text, repeat in due:
+                    if repeat:
+                        remaining.append((now + repeat, channel_id, text, repeat))
+                SCHEDULED_MESSAGES[guild_id] = remaining
+        await asyncio.sleep(5)
+
+
 @bot.event
 async def on_ready():
     if load_config():
@@ -856,6 +890,7 @@ async def on_ready():
     await bot.tree.sync()
     bot.loop.create_task(room_cleanup_loop())
     bot.loop.create_task(stats_save_loop())
+    bot.loop.create_task(scheduler_loop())
     bot.ai_session = aiohttp.ClientSession()
     print(f"Logged in as {bot.user} ({bot.user.id}) - slash commands synced")
 
@@ -956,6 +991,52 @@ async def on_guild_channel_create(channel):
                 pass
         await announce(guild, f":wastebasket: Deleted **{deleted}** channels created during the raid.")
         await audit(guild, f":wastebasket: Deleted {deleted} raided channels")
+
+
+@bot.event
+async def on_raw_reaction_add(payload):
+    if payload.user_id == bot.user.id:
+        return
+    rr = REACTION_ROLES.get(payload.guild_id, {}).get(payload.message_id)
+    if not rr:
+        return
+    role_id = rr.get(str(payload.emoji))
+    if not role_id:
+        return
+    guild = bot.get_guild(payload.guild_id)
+    member = guild.get_member(payload.user_id) if guild else None
+    if not guild or not member:
+        return
+    role = guild.get_role(role_id)
+    if not role:
+        return
+    try:
+        await member.add_roles(role, reason="Reaction role")
+    except discord.HTTPException:
+        pass
+
+
+@bot.event
+async def on_raw_reaction_remove(payload):
+    if payload.user_id == bot.user.id:
+        return
+    rr = REACTION_ROLES.get(payload.guild_id, {}).get(payload.message_id)
+    if not rr:
+        return
+    role_id = rr.get(str(payload.emoji))
+    if not role_id:
+        return
+    guild = bot.get_guild(payload.guild_id)
+    member = guild.get_member(payload.user_id) if guild else None
+    if not guild or not member:
+        return
+    role = guild.get_role(role_id)
+    if not role:
+        return
+    try:
+        await member.remove_roles(role, reason="Reaction role removed")
+    except discord.HTTPException:
+        pass
 
 
 @bot.event
@@ -2312,7 +2393,7 @@ async def run_admin_tool(guild, name, args):
             return err
         if not isinstance(channel, (discord.TextChannel, discord.Thread)):
             return "read_messages only works on text channels and threads."
-        limit = max(1, min(int(args.get("limit") or 5), 30))
+        limit = max(1, int(args.get("limit") or 30))
         try:
             msgs = [m async for m in channel.history(limit=limit)]
         except discord.HTTPException as e:
@@ -2325,7 +2406,8 @@ async def run_admin_tool(guild, name, args):
             ) + (" [attachment]" if m.attachments else "") + (" [reply]" if m.reference else "")
             for m in reversed(msgs)
         ]
-        return f"Recent messages in #{channel.name}:\n" + "\n".join(lines)
+        out = f"Recent messages in #{channel.name}:\n" + "\n".join(lines)
+        return out[:40000] + (f"\n... (result truncated at 40000 chars)" if len(out) > 40000 else "")
     if name == "server_stats":
         bots = sum(1 for m in guild.members if m.bot)
         return (
@@ -2563,8 +2645,8 @@ async def run_admin_tool(guild, name, args):
         if not cname:
             return "Provide a channel name."
         ctype = (args.get("type") or "text").lower()
-        if ctype not in ("text", "voice", "category"):
-            return "Channel type must be text, voice or category."
+        if ctype not in ("text", "voice", "category", "forum", "announcement"):
+            return "Channel type must be text, voice, category, forum or announcement."
         cat = None
         if args.get("category"):
             cat = next((c for c in guild.categories if c.name.lower() == args["category"].lower()), None)
@@ -2573,6 +2655,10 @@ async def run_admin_tool(guild, name, args):
                 ch = await guild.create_voice_channel(name=cname, category=cat, reason="AI admin: create channel")
             elif ctype == "category":
                 ch = await guild.create_category(name=cname, reason="AI admin: create channel")
+            elif ctype == "forum":
+                ch = await guild.create_forum(name=cname, category=cat, reason="AI admin: create channel")
+            elif ctype == "announcement":
+                ch = await guild.create_text_channel(name=cname, category=cat, news=True, reason="AI admin: create channel")
             else:
                 ch = await guild.create_text_channel(name=cname, category=cat, reason="AI admin: create channel")
         except discord.HTTPException as e:
@@ -2620,7 +2706,7 @@ async def run_admin_tool(guild, name, args):
         ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
         if err:
             return err
-        count = max(1, min(int(args.get("count") or 5), 100))
+        count = max(1, int(args.get("count") or 5))
         try:
             await ch.purge(limit=count, reason="AI admin: purge")
         except discord.HTTPException as e:
@@ -2695,9 +2781,24 @@ async def run_admin_tool(guild, name, args):
             kwargs["name"] = (args.get("name") or "").strip()[:100]
         if args.get("description") is not None:
             kwargs["description"] = (args.get("description") or "").strip()[:1024] or None
+        if args.get("verification_level") is not None:
+            lvl = str(args.get("verification_level")).lower()
+            levels = {"none": 0, "low": 1, "medium": 2, "high": 3, "very_high": 4, "extreme": 4}
+            if lvl not in levels:
+                return "verification_level must be none, low, medium, high or very_high."
+            kwargs["verification_level"] = discord.VerificationLevel(levels[lvl])
+        if args.get("explicit_content_filter") is not None:
+            lvl = str(args.get("explicit_content_filter")).lower()
+            levels = {"off": 0, "no_role": 1, "everyone": 2, "all_members": 2}
+            if lvl not in levels:
+                return "explicit_content_filter must be off, no_role or everyone."
+            kwargs["explicit_content_filter"] = discord.ContentFilter(levels[lvl])
         if not kwargs:
-            return "Provide a name or description."
-        await guild.edit(**kwargs, reason="AI admin: edit server")
+            return "Provide a name, description, verification_level or explicit_content_filter."
+        try:
+            await guild.edit(**kwargs, reason="AI admin: edit server")
+        except (discord.HTTPException, TypeError) as e:
+            return f"Failed to edit server: {e}"
         return f"Updated server: {', '.join(f'{k}={v!r}' for k, v in kwargs.items())}."
     if name == "create_emoji":
         ename = (args.get("name") or "").strip()[:32]
@@ -2780,6 +2881,307 @@ async def run_admin_tool(guild, name, args):
             for e in entries
         ]
         return "Recent audit log:\n" + "\n".join(lines)
+    if name == "mute_member":
+        member, err = resolve_member_arg(guild, args)
+        if err:
+            return err
+        if admin_protected(member):
+            return f"Refused: **{member}** is protected (owner/bot/admin/whitelisted)."
+        toggle = bool(args.get("muted"))
+        await member.edit(mute=toggle, reason="AI admin: mute member")
+        await audit(guild, f":mute: AI admin {'muted' if toggle else 'unmuted'} **{member}**")
+        return f"{'Muted' if toggle else 'Unmuted'} **{member}**."
+    if name == "deafen_member":
+        member, err = resolve_member_arg(guild, args)
+        if err:
+            return err
+        if admin_protected(member):
+            return f"Refused: **{member}** is protected (owner/bot/admin/whitelisted)."
+        toggle = bool(args.get("deafened"))
+        await member.edit(deafen=toggle, reason="AI admin: deafen member")
+        await audit(guild, f":deaf: AI admin {'deafened' if toggle else 'undeafened'} **{member}**")
+        return f"{'Deafened' if toggle else 'Undeafened'} **{member}**."
+    if name == "edit_message":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        mid = (args.get("message_id") or "").strip()
+        text = (args.get("text") or "").strip()[:1900]
+        if not mid or not text:
+            return "Provide a message_id and text."
+        try:
+            msg = await ch.fetch_message(int(mid))
+            await msg.edit(content=scrub_mentions(text))
+        except (discord.HTTPException, ValueError) as e:
+            return f"Failed to edit message: {e}"
+        return f"Edited message id={mid} in #{ch.name}."
+    if name == "search_messages":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        if not isinstance(ch, (discord.TextChannel, discord.Thread)):
+            return "search_messages only works on text channels and threads."
+        q = (args.get("term") or "").lower().strip()
+        if not q:
+            return "Provide a term to search for."
+        limit = max(1, int(args.get("limit") or 500))
+        try:
+            msgs = [m async for m in ch.history(limit=limit)]
+        except discord.HTTPException as e:
+            return f"Could not search channel: {e}"
+        hits = [m for m in msgs if q in m.content.lower()]
+        if not hits:
+            return f"No messages matching **{q}** in the last {limit} messages of #{ch.name}."
+        lines = [
+            f"[{m.created_at.strftime('%m-%d %H:%M')}] {m.author.name} (id={m.author.id}): {m.content[:120]}"
+            for m in hits[:30]
+        ]
+        if len(hits) > 30:
+            lines.append(f"... and {len(hits) - 30} more")
+        return f"{len(hits)} match(es) for **{q}** in #{ch.name} (last {limit} msgs):\n" + "\n".join(lines)
+    if name == "create_webhook":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        wname = (args.get("name") or "").strip()[:80]
+        if not wname:
+            return "Provide a webhook name."
+        try:
+            kwargs = {"name": wname, "reason": "AI admin: create webhook"}
+            if args.get("avatar_url"):
+                import aiohttp
+                async with aiohttp.ClientSession() as s:
+                    async with s.get(args["avatar_url"]) as r:
+                        kwargs["avatar"] = await r.read()
+            wh = await ch.create_webhook(**kwargs)
+        except (discord.HTTPException, OSError, aiohttp.ClientError, ValueError) as e:
+            return f"Failed to create webhook: {e}"
+        return f"Created webhook **{wh.name}** (id={wh.id}) in #{ch.name}."
+    if name == "delete_webhook":
+        wid = (args.get("webhook_id") or "").strip()
+        if not wid:
+            return "Provide a webhook_id."
+        try:
+            wh = await bot.fetch_webhook(int(wid))
+            await wh.delete(reason="AI admin: delete webhook")
+        except (discord.HTTPException, ValueError) as e:
+            return f"Failed to delete webhook: {e}"
+        return f"Deleted webhook id={wid}."
+    if name == "list_webhooks":
+        try:
+            webhooks = await guild.webhooks()
+        except discord.HTTPException as e:
+            return f"Could not list webhooks: {e}"
+        if not webhooks:
+            return "No webhooks in this server."
+        lines = [
+            f"- id={w.id} | {w.name} | channel: #{w.channel.name if w.channel else 'deleted'} | bot: {w.type}"
+            for w in webhooks[:50]
+        ]
+        return "Webhooks:\n" + "\n".join(lines)
+    if name == "list_bans":
+        try:
+            bans = [entry async for entry in guild.bans(limit=100)]
+        except discord.HTTPException as e:
+            return f"Could not list bans: {e}"
+        if not bans:
+            return "No banned users."
+        lines = [f"- id={e.user.id} | {e.user.name} | reason: {e.reason or 'none'}" for e in bans]
+        return f"Banned users ({len(bans)}):\n" + "\n".join(lines)
+    if name == "list_emojis":
+        if not guild.emojis:
+            return "No custom emojis in this server."
+        lines = [
+            f"- :{e.name}: (id={e.id}) | animated: {e.animated} | created by: {e.user.name if e.user else 'unknown'}"
+            for e in guild.emojis
+        ]
+        return "Custom emojis:\n" + "\n".join(lines)
+    if name == "create_invite":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        try:
+            inv = await ch.create_invite(
+                max_age=max(0, min(int(args.get("max_age_seconds") or 0), 604800)),
+                max_uses=max(0, min(int(args.get("max_uses") or 0), 100)),
+                reason="AI admin: create invite",
+            )
+        except (discord.HTTPException, ValueError) as e:
+            return f"Failed to create invite: {e}"
+        return f"Invite created: {inv.url} (expires in {inv.max_age}s, {inv.max_uses} uses)."
+    if name == "list_invites":
+        try:
+            invites = await guild.invites()
+        except discord.HTTPException as e:
+            return f"Could not list invites: {e}"
+        if not invites:
+            return "No active invites."
+        lines = [
+            f"- {i.code} | channel: #{i.channel.name if i.channel else 'unknown'} | uses: {i.uses}/{i.max_uses} | created: {i.created_at.strftime('%Y-%m-%d') if i.created_at else 'unknown'}"
+            for i in invites[:50]
+        ]
+        return "Active invites:\n" + "\n".join(lines)
+    if name == "delete_invite":
+        code = (args.get("invite_code") or "").strip()
+        if not code:
+            return "Provide an invite code (e.g. the 'abc123' part of discord.gg/abc123)."
+        try:
+            inv = await bot.fetch_invite(code)
+            await inv.delete(reason="AI admin: delete invite")
+        except (discord.HTTPException, ValueError) as e:
+            return f"Failed to delete invite: {e}"
+        return f"Deleted invite **{code}**."
+    if name == "move_message":
+        src, err = resolve_channel(guild, args.get("source_channel_id"), args.get("source_query"))
+        if err:
+            return err
+        dst, err2 = resolve_channel(guild, args.get("destination_channel_id"), args.get("destination_query"))
+        if err2:
+            return err2
+        mid = (args.get("message_id") or "").strip()
+        if not mid:
+            return "Provide a message_id."
+        try:
+            msg = await src.fetch_message(int(mid))
+            content = msg.content[:1900] or "(no text content)"
+            await dst.send(scrub_mentions(content))
+            await msg.delete(reason="AI admin: move message")
+        except (discord.HTTPException, ValueError) as e:
+            return f"Failed to move message: {e}"
+        return f"Moved message id={mid} from #{src.name} to #{dst.name}."
+    if name == "send_file":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        url = (args.get("file_url") or "").strip()
+        caption = (args.get("caption") or "").strip()[:1500]
+        if not url:
+            return "Provide a file_url."
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as s:
+                async with s.get(url) as r:
+                    data = await r.read()
+            fname = url.split("/")[-1].split("?")[0][:80] or "file"
+            await ch.send(caption or None, file=discord.File(BytesIO(data), filename=fname))
+        except (discord.HTTPException, OSError, aiohttp.ClientError) as e:
+            return f"Failed to send file: {e}"
+        return f"Sent **{fname}** to #{ch.name}."
+    if name == "fetch_url":
+        url = (args.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            return "Only http(s) URLs are allowed."
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as s:
+                async with s.get(url, timeout=aiohttp.ClientTimeout(total=30)) as r:
+                    data = (await r.read()).decode("utf-8", errors="replace")
+            return data[:10000] or f"(empty response, status {r.status})"
+        except Exception as e:
+            return f"Fetch failed: {type(e).__name__}: {e}"
+    if name == "reaction_role_add":
+        mid = (args.get("message_id") or "").strip()
+        emoji = (args.get("emoji") or "").strip()
+        role, err = resolve_role(guild, args.get("role_id"), args.get("role_query"))
+        if err:
+            return err
+        if not mid or not emoji:
+            return "Provide a message_id and emoji (raw like '🔥' or custom like <:name:id>)."
+        REACTION_ROLES[guild.id].setdefault(int(mid), {})[emoji] = role.id
+        save_config(guild.id)
+        return f"Reaction role set: {emoji} on message {mid} -> **{role.name}**."
+    if name == "reaction_role_remove":
+        mid = (args.get("message_id") or "").strip()
+        emoji = (args.get("emoji") or "").strip()
+        if not mid or not emoji:
+            return "Provide a message_id and emoji."
+        removed = REACTION_ROLES[guild.id].get(int(mid), {}).pop(emoji, None)
+        save_config(guild.id)
+        return f"Removed reaction role {emoji} on message {mid}." if removed else f"No reaction role found for {emoji} on message {mid}."
+    if name == "reaction_role_list":
+        mapping = REACTION_ROLES.get(guild.id, {})
+        if not mapping:
+            return "No reaction roles configured."
+        lines = []
+        for mid, emojis in mapping.items():
+            for emoji, role_id in emojis.items():
+                role = guild.get_role(role_id)
+                lines.append(f"- message {mid} | {emoji} -> **{role.name if role else f'role id {role_id}'}**")
+        return "Reaction roles:\n" + "\n".join(lines)
+    if name == "schedule_message":
+        ch, err = resolve_channel(guild, args.get("channel_id"), args.get("query"))
+        if err:
+            return err
+        text = (args.get("text") or "").strip()[:1900]
+        if not text:
+            return "Provide text."
+        try:
+            delay = max(1, min(int(args.get("delay_seconds") or 60), 86400))
+            repeat = None
+            if args.get("repeat_every") is not None:
+                repeat = max(60, min(int(args.get("repeat_every")), 86400))
+        except ValueError:
+            return "delay_seconds and repeat_every must be numbers."
+        SCHEDULED_MESSAGES[guild.id].append((time.monotonic() + delay, ch.id, text, repeat))
+        extra = f" repeating every {repeat}s" if repeat else ""
+        return f"Scheduled a message for #{ch.name} in {delay}s{extra}."
+    if name == "automod":
+        rule = (args.get("rule") or "").lower().strip()
+        if rule not in ("keyword", "spam", "mention"):
+            return "rule must be keyword, spam or mention."
+        trigger = (args.get("trigger") or "").strip()
+        try:
+            creator = getattr(guild, "create_automod_rule", None)
+            if creator is None:
+                return "Auto-mod is not supported by this discord.py version (needs 2.3+)."
+            if rule == "keyword":
+                if not trigger:
+                    return "Provide a trigger keyword."
+                trig = discord.AutoModTrigger(keyword_filter=[trigger])
+            elif rule == "spam":
+                trig = discord.AutoModTrigger(spam_link_filter=True)
+            else:
+                try:
+                    trig = discord.AutoModTrigger(mention_spam_limit=max(3, min(int(trigger or 5), 50)))
+                except ValueError:
+                    return "trigger for mention rule must be a number (max mentions)."
+            await creator(
+                name=f"AI {rule} rule",
+                event_type=discord.AutoModRuleEvent.message_send,
+                trigger=trig,
+                actions=[discord.AutoModRuleAction(
+                    discord.AutoModRuleActionType.block_message,
+                    custom_message="Blocked by AI auto-mod rule.",
+                )],
+                enabled=True,
+                reason="AI admin: automod",
+            )
+        except Exception as e:
+            return f"Failed to create automod rule: {type(e).__name__}: {e}"
+        return f"Created automod **{rule}** rule."
+    if name == "export_server":
+        data = {"guild": guild.name, "id": guild.id, **serialize_guild(guild)}
+        return json.dumps(data, indent=1)[:30000]
+    if name == "filter_members":
+        members = list(guild.members)
+        if args.get("bots") is not None:
+            members = [m for m in members if m.bot == bool(args.get("bots"))]
+        if args.get("online") is not None:
+            members = [m for m in members if (m.status != discord.Status.offline) == bool(args.get("online"))]
+        if args.get("role_id") or args.get("role_query"):
+            role, err = resolve_role(guild, args.get("role_id"), args.get("role_query"))
+            if err:
+                return err
+            members = [m for m in members if role in m.roles]
+        if args.get("name_contains"):
+            q = args["name_contains"].lower()
+            members = [m for m in members if q in m.name.lower() or q in (m.display_name or m.name).lower()]
+        if not members:
+            return "No members match the filters."
+        lines = [f"- id={m.id} | {m.name} (display: {m.display_name})" for m in members[:50]]
+        if len(members) > 50:
+            lines.append(f"... and {len(members) - 50} more")
+        return f"**{len(members)}** members match:\n" + "\n".join(lines)
     if name == "set_nickname":
         member, err = resolve_member_arg(guild, args)
         if err:
@@ -3184,12 +3586,12 @@ ADMIN_TOOLS = [
         "type": "function",
         "function": {
             "name": "create_channel",
-            "description": "Create a text, voice or category channel.",
+            "description": "Create a channel: text, voice, category, forum or announcement.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string"},
-                    "type": {"type": "string", "enum": ["text", "voice", "category"]},
+                    "type": {"type": "string", "enum": ["text", "voice", "category", "forum", "announcement"]},
                     "category": {"type": "string", "description": "Category name to place it under"},
                 },
                 "required": ["name"],
@@ -3263,13 +3665,13 @@ ADMIN_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_messages",
-            "description": "Read the most recent messages in a text channel or thread (max 30) so you can see what people said and reply to it.",
+            "description": "Read recent messages in a text channel or thread (no limit - scan as deep as you need).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "channel_id": {"type": "string"},
                     "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 30, "description": "How many recent messages to read"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many recent messages to read"},
                 },
             },
         },
@@ -3278,13 +3680,13 @@ ADMIN_TOOLS = [
         "type": "function",
         "function": {
             "name": "purge_messages",
-            "description": "Delete the most recent N messages in a text channel (max 100).",
+            "description": "Delete the most recent N messages in a text channel (no limit).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "channel_id": {"type": "string"},
                     "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
-                    "count": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "count": {"type": "integer", "minimum": 1},
                 },
                 "required": ["count"],
             },
@@ -3393,12 +3795,14 @@ ADMIN_TOOLS = [
         "type": "function",
         "function": {
             "name": "edit_server",
-            "description": "Edit the server name or description.",
+            "description": "Edit the server name, description, verification level (none/low/medium/high/very_high) or explicit content filter (off/no_role/everyone).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string"},
                     "description": {"type": "string", "description": "Server description (empty string clears it)"},
+                    "verification_level": {"type": "string", "description": "none, low, medium, high or very_high"},
+                    "explicit_content_filter": {"type": "string", "description": "off, no_role or everyone"},
                 },
                 "required": [],
             },
@@ -3541,6 +3945,314 @@ ADMIN_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "mute_member",
+            "description": "Mute or unmute a member in voice channels (muted: true/false).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Member name as alternative to member_id"},
+                    "muted": {"type": "boolean"},
+                },
+                "required": ["muted"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "deafen_member",
+            "description": "Deafen or undeafen a member in voice channels (deafened: true/false).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Member name as alternative to member_id"},
+                    "deafened": {"type": "boolean"},
+                },
+                "required": ["deafened"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_message",
+            "description": "Edit an existing message's content by message id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "message_id": {"type": "string"},
+                    "text": {"type": "string"},
+                },
+                "required": ["channel_id", "message_id", "text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_messages",
+            "description": "Search recent messages in a channel for a text term (no depth limit - scan as deep as you need).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "term": {"type": "string", "description": "Text to search for"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many recent messages to scan"},
+                },
+                "required": ["term"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "schedule_message",
+            "description": "Schedule a message to be sent to a channel after a delay (1-86400 seconds), optionally repeating.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "text": {"type": "string"},
+                    "delay_seconds": {"type": "integer"},
+                    "repeat_every": {"type": "integer", "description": "Optional: repeat every N seconds (min 60)"},
+                },
+                "required": ["text", "delay_seconds"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_webhook",
+            "description": "Create a webhook in a channel (optional avatar image URL).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "name": {"type": "string"},
+                    "avatar_url": {"type": "string"},
+                },
+                "required": ["channel_id", "name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_webhook",
+            "description": "Delete a webhook by its id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "webhook_id": {"type": "string"},
+                },
+                "required": ["webhook_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_webhooks",
+            "description": "List all webhooks in the server.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_bans",
+            "description": "List currently banned users (up to 100).",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "export_server",
+            "description": "Export the server structure (roles, channels, overwrites) as JSON - the same data /backup creates.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "filter_members",
+            "description": "Filter members by bots, online status, role, or name fragment.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "bots": {"type": "boolean", "description": "true = only bots, false = only humans"},
+                    "online": {"type": "boolean", "description": "true = only online, false = only offline"},
+                    "role_id": {"type": "string"},
+                    "role_query": {"type": "string", "description": "Role name as alternative to role_id"},
+                    "name_contains": {"type": "string"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_emojis",
+            "description": "List all custom emojis in the server.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_invite",
+            "description": "Create an invite for a channel (max_age_seconds 0 = never expires, max_uses 0 = unlimited).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "max_age_seconds": {"type": "integer"},
+                    "max_uses": {"type": "integer"},
+                },
+                "required": ["channel_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_invites",
+            "description": "List all active invites in the server.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_invite",
+            "description": "Delete an invite by its code (the part after discord.gg/).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "invite_code": {"type": "string"},
+                },
+                "required": ["invite_code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "move_message",
+            "description": "Move a message from one channel to another (copies content, deletes original).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_channel_id": {"type": "string"},
+                    "source_query": {"type": "string", "description": "Source channel name as alternative"},
+                    "destination_channel_id": {"type": "string"},
+                    "destination_query": {"type": "string", "description": "Destination channel name as alternative"},
+                    "message_id": {"type": "string"},
+                },
+                "required": ["destination_channel_id", "message_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_file",
+            "description": "Send a file/attachment to a channel from a URL (with optional caption).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Channel name as alternative to channel_id"},
+                    "file_url": {"type": "string"},
+                    "caption": {"type": "string"},
+                },
+                "required": ["channel_id", "file_url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_url",
+            "description": "Fetch the text content of a public http(s) URL (external APIs, web pages, JSON endpoints).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reaction_role_add",
+            "description": "Assign a role when members react to a message with an emoji. Emoji raw like '🔥' or custom like <:name:id>.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message_id": {"type": "string"},
+                    "emoji": {"type": "string"},
+                    "role_id": {"type": "string"},
+                    "role_query": {"type": "string", "description": "Role name as alternative to role_id"},
+                },
+                "required": ["message_id", "emoji"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reaction_role_remove",
+            "description": "Remove a reaction-role binding from a message.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message_id": {"type": "string"},
+                    "emoji": {"type": "string"},
+                },
+                "required": ["message_id", "emoji"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reaction_role_list",
+            "description": "List all configured reaction roles.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "automod",
+            "description": "Create a Discord auto-mod rule (keyword, spam link filter, or mention spam limit).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "rule": {"type": "string", "description": "keyword, spam or mention"},
+                    "trigger": {"type": "string", "description": "For keyword: the word/phrase. For mention: max mentions number."},
+                },
+                "required": ["rule"],
+            },
+        },
+    },
 ]
 
 
@@ -3580,7 +4292,7 @@ async def _ai_post_background(interaction, coro):
     except Exception as e:
         reply = f"Something went wrong mid-task: {type(e).__name__}: {e}"
     try:
-        await interaction.channel.send(f"{interaction.user.mention} {reply}")
+        await interaction.channel.send(fit(f"{interaction.user.mention} {reply}"))
     except discord.HTTPException as e:
         try:
             await interaction.followup.send(f"Could not post the result here: {e}")
