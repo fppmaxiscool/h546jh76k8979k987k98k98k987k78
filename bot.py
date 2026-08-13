@@ -1721,6 +1721,8 @@ def fit(text, limit=1990):
 
 
 async def ai_call(messages, tools=None):
+    if getattr(bot, "ai_session", None) is None or bot.ai_session.closed:
+        bot.ai_session = aiohttp.ClientSession()
     payload = {"model": AI_MODEL, "messages": messages, "max_tokens": 700, "temperature": 0.7}
     if tools:
         payload["tools"] = tools
