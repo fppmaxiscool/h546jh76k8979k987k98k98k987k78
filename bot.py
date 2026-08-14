@@ -37,8 +37,9 @@ if not TOKEN:
 OWNER_ID = 847669208296063016
 
 AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
 AI_MODEL = os.getenv("AI_MODEL", "deepseek-chat").strip()
-AI_ENABLED = bool(AI_API_KEY)
+AI_ENABLED = bool(AI_API_KEY) or bool(OPENROUTER_API_KEY)
 AI_MEMORY = {}
 AI_ADMIN_MEMORY = defaultdict(lambda: deque(maxlen=12))
 AI_JUICED_MEMORY = defaultdict(lambda: deque(maxlen=12))
@@ -1801,16 +1802,30 @@ def fit(text, limit=1990):
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
-async def ai_call(messages, tools=None):
+async def ai_call(messages, tools=None, free_mode=False):
     if getattr(bot, "ai_session", None) is None or bot.ai_session.closed:
         bot.ai_session = aiohttp.ClientSession()
-    payload = {"model": AI_MODEL, "messages": messages, "max_tokens": 700, "temperature": 0.7}
+        
+    if free_mode:
+        if not OPENROUTER_API_KEY:
+            return "AI free mode is not set up yet. Add an `OPENROUTER_API_KEY` to the bot environment."
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        key = OPENROUTER_API_KEY
+        model = "meta-llama/llama-3.1-8b-instruct:free"
+    else:
+        if not AI_API_KEY:
+            return "AI is not set up yet. Add an `AI_API_KEY` to the bot environment."
+        url = "https://api.deepseek.com/chat/completions"
+        key = AI_API_KEY
+        model = AI_MODEL
+
+    payload = {"model": model, "messages": messages, "max_tokens": 700, "temperature": 0.7}
     if tools:
         payload["tools"] = tools
-    headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     try:
         async with bot.ai_session.post(
-            "https://api.deepseek.com/chat/completions",
+            url,
             json=payload,
             headers=headers,
             timeout=aiohttp.ClientTimeout(total=120),
@@ -3225,16 +3240,16 @@ async def run_admin_tool(guild, name, args):
     return "Unknown tool."
 
 
-async def ai_admin_generate(prompt, interaction):
+async def ai_admin_generate(prompt, interaction, free_mode=False):
     if not AI_ENABLED:
-        return "AI is not set up yet. The owner needs to add an `AI_API_KEY` to the bot environment."
+        return "AI is not set up yet. The owner needs to add an `AI_API_KEY` or `OPENROUTER_API_KEY` to the bot environment."
     memory = AI_ADMIN_MEMORY[interaction.user.id]
     messages = [{"role": "system", "content": ADMIN_SYSTEM}]
     for role, text in memory:
         messages.append({"role": role, "content": text})
     messages.append({"role": "user", "content": prompt})
     while True:
-        data = await ai_call(messages, tools=ADMIN_TOOLS)
+        data = await ai_call(messages, tools=ADMIN_TOOLS, free_mode=free_mode)
         if isinstance(data, str):
             return data
         if data.get("tool_calls"):
@@ -3260,16 +3275,16 @@ async def ai_admin_generate(prompt, interaction):
         return fit(reply)
 
 
-async def ai_juiced_generate(prompt, interaction):
+async def ai_juiced_generate(prompt, interaction, free_mode=False):
     if not AI_ENABLED:
-        return "AI is not set up yet. The owner needs to add an `AI_API_KEY` to the bot environment."
+        return "AI is not set up yet. The owner needs to add an `AI_API_KEY` or `OPENROUTER_API_KEY` to the bot environment."
     memory = AI_JUICED_MEMORY[interaction.user.id]
     messages = [{"role": "system", "content": JUICED_SYSTEM}]
     for role, text in memory:
         messages.append({"role": role, "content": text})
     messages.append({"role": "user", "content": prompt})
     while True:
-        data = await ai_call(messages, tools=ADMIN_TOOLS)
+        data = await ai_call(messages, tools=ADMIN_TOOLS, free_mode=free_mode)
         if isinstance(data, str):
             return data
         if data.get("tool_calls"):
@@ -4302,20 +4317,20 @@ async def _ai_post_background(interaction, coro):
 
 @ai_group.command(name="admin", description="AI admin: view members and moderate (ban/kick/timeout)")
 @is_trusted()
-async def ai_admin_cmd(interaction: discord.Interaction, message: str):
+async def ai_admin_cmd(interaction: discord.Interaction, message: str, free: bool = False):
     await interaction.response.send_message(
         "working on it — I'll post the result in this channel when done."
     )
-    asyncio.create_task(_ai_post_background(interaction, ai_admin_generate(message, interaction)))
+    asyncio.create_task(_ai_post_background(interaction, ai_admin_generate(message, interaction, free_mode=free)))
 
 
 @ai_group.command(name="juiced", description="AI admin with the [CATT]vk persona")
 @is_trusted()
-async def ai_juiced_cmd(interaction: discord.Interaction, message: str):
+async def ai_juiced_cmd(interaction: discord.Interaction, message: str, free: bool = False):
     await interaction.response.send_message(
         "working on it — I'll post the result in this channel when done."
     )
-    asyncio.create_task(_ai_post_background(interaction, ai_juiced_generate(message, interaction)))
+    asyncio.create_task(_ai_post_background(interaction, ai_juiced_generate(message, interaction, free_mode=free)))
 
 
 bot.tree.add_command(ai_group)
