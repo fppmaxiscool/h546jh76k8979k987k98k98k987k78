@@ -4321,20 +4321,38 @@ async def _ai_post_background(interaction, coro):
 
 @ai_group.command(name="admin", description="AI admin: view members and moderate (ban/kick/timeout)")
 @is_trusted()
-async def ai_admin_cmd(interaction: discord.Interaction, message: str, free: bool = False):
+async def ai_admin_cmd(interaction: discord.Interaction, message: str):
     await interaction.response.send_message(
         "working on it — I'll post the result in this channel when done."
     )
-    asyncio.create_task(_ai_post_background(interaction, ai_admin_generate(message, interaction, free_mode=free)))
+    asyncio.create_task(_ai_post_background(interaction, ai_admin_generate(message, interaction)))
+
+
+@ai_group.command(name="admin-free", description="AI admin powered by Grok (xAI)")
+@is_trusted()
+async def ai_admin_free_cmd(interaction: discord.Interaction, message: str):
+    await interaction.response.send_message(
+        "working on it — I'll post the result in this channel when done."
+    )
+    asyncio.create_task(_ai_post_background(interaction, ai_admin_generate(message, interaction, free_mode=True)))
 
 
 @ai_group.command(name="juiced", description="AI admin with the [CATT]vk persona")
 @is_trusted()
-async def ai_juiced_cmd(interaction: discord.Interaction, message: str, free: bool = False):
+async def ai_juiced_cmd(interaction: discord.Interaction, message: str):
     await interaction.response.send_message(
         "working on it — I'll post the result in this channel when done."
     )
-    asyncio.create_task(_ai_post_background(interaction, ai_juiced_generate(message, interaction, free_mode=free)))
+    asyncio.create_task(_ai_post_background(interaction, ai_juiced_generate(message, interaction)))
+
+
+@ai_group.command(name="juiced-free", description="[CATT]vk persona powered by Grok (xAI)")
+@is_trusted()
+async def ai_juiced_free_cmd(interaction: discord.Interaction, message: str):
+    await interaction.response.send_message(
+        "working on it — I'll post the result in this channel when done."
+    )
+    asyncio.create_task(_ai_post_background(interaction, ai_juiced_generate(message, interaction, free_mode=True)))
 
 
 bot.tree.add_command(ai_group)
