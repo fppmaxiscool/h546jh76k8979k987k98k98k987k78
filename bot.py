@@ -886,7 +886,10 @@ async def on_ready():
     for gid in (1536762391851696199, 1521614024587083908, 1532457300973981777, 1530550124906807366, 1529208877940212062, 1528149700765548726):
         guild = discord.Object(id=gid)
         bot.tree.copy_global_to(guild=guild)
-        await bot.tree.sync(guild=guild)
+        try:
+            await bot.tree.sync(guild=guild)
+        except discord.Forbidden:
+            print(f"Skipping guild {gid}: bot has no access (removed or missing permission)")
     bot.tree.clear_commands(guild=None)
     await bot.tree.sync()
     bot.loop.create_task(room_cleanup_loop())
@@ -943,7 +946,7 @@ async def on_member_join(member):
 
     now = time.monotonic()
     JOIN_LOG.append((now, member))
-    recent = [m for t, m in JOIN_LOG if now - t <= RAID_JOIN_BUFFER and m.guild.id == member.guild.id]
+    recent = [(t, m) for t, m in JOIN_LOG if now - t <= RAID_JOIN_BUFFER and m.guild.id == member.guild.id]
     fresh = [m for t, m in recent if (now - t) <= RAID_JOIN_WINDOW]
     if len(fresh) >= RAID_JOIN_COUNT:
         await trigger_raid(member.guild, f"{len(fresh)} joins in {RAID_JOIN_WINDOW}s")
