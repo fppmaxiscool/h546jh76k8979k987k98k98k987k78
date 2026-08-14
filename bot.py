@@ -1838,7 +1838,9 @@ async def ai_call(messages, tools=None, free_mode=False):
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
-                data = {"error": {"message": raw[:500]}}
+                data = None
+            if not isinstance(data, dict):
+                return f"AI error ({resp.status}): {raw[:500]}"
             if resp.status != 200:
                 return f"AI error: {data.get('error', {}).get('message', resp.status)}"
             if not isinstance(data, dict) or not data.get("choices"):
