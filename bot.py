@@ -37,9 +37,10 @@ if not TOKEN:
 OWNER_ID = 847669208296063016
 
 AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+XAI_API_KEY = os.getenv("XAI_API_KEY", "").strip()
 AI_MODEL = os.getenv("AI_MODEL", "deepseek-chat").strip()
-AI_ENABLED = bool(AI_API_KEY) or bool(OPENROUTER_API_KEY)
+XAI_MODEL = os.getenv("XAI_MODEL", "grok-4.6").strip()
+AI_ENABLED = bool(AI_API_KEY) or bool(XAI_API_KEY) or bool(OPENROUTER_API_KEY)
 AI_MEMORY = {}
 AI_ADMIN_MEMORY = defaultdict(lambda: deque(maxlen=12))
 AI_JUICED_MEMORY = defaultdict(lambda: deque(maxlen=12))
@@ -1810,11 +1811,11 @@ async def ai_call(messages, tools=None, free_mode=False):
         bot.ai_session = aiohttp.ClientSession()
         
     if free_mode:
-        if not OPENROUTER_API_KEY:
-            return "AI free mode is not set up yet. Add an `OPENROUTER_API_KEY` to the bot environment."
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        key = OPENROUTER_API_KEY
-        model = "x-ai/grok-3-mini"
+        if not XAI_API_KEY:
+            return "AI free mode is not set up yet. Add an `XAI_API_KEY` to the bot environment."
+        url = "https://api.x.ai/v1/chat/completions"
+        key = XAI_API_KEY
+        model = XAI_MODEL
     else:
         if not AI_API_KEY:
             return "AI is not set up yet. Add an `AI_API_KEY` to the bot environment."
