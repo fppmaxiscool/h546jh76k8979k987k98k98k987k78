@@ -1846,6 +1846,9 @@ async def ai_call(messages, tools=None, free_mode=False):
             if not isinstance(data, dict) or not data.get("choices"):
                 return f"AI error: unexpected response: {str(data)[:500]}"
             msg = data["choices"][0].get("message") or {}
+            if not isinstance(msg, dict):
+                print(f"Raw AI response: {raw[:2000]}")
+                return f"AI error: unexpected message shape: {str(msg)[:500]}"
             content = msg.get("content")
             if isinstance(content, list):
                 content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
