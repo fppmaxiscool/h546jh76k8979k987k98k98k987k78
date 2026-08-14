@@ -1843,9 +1843,11 @@ async def ai_call(messages, tools=None, free_mode=False):
                 return f"AI error ({resp.status}): {raw[:500]}"
             if resp.status != 200:
                 return f"AI error: {data.get('error', {}).get('message', resp.status)}"
-            if not isinstance(data, dict) or not data.get("choices"):
-                return f"AI error: unexpected response: {str(data)[:500]}"
-            msg = data["choices"][0].get("message") or {}
+            choices = data.get("choices") if isinstance(data, dict) else None
+            if not (isinstance(choices, list) and choices and isinstance(choices[0], dict)):
+                print(f"Raw AI response: {raw[:2000]}")
+                return f"AI error: unexpected response shape: {str(data)[:500]}"
+            msg = choices[0].get("message") or {}
             if not isinstance(msg, dict):
                 print(f"Raw AI response: {raw[:2000]}")
                 return f"AI error: unexpected message shape: {str(msg)[:500]}"
