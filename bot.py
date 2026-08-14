@@ -1834,10 +1834,22 @@ async def ai_call(messages, tools=None, free_mode=False):
             headers=headers,
             timeout=aiohttp.ClientTimeout(total=120),
         ) as resp:
-            data = await resp.json()
+            raw = await resp.text()
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                data = {"error": {"message": raw[:500]}}
             if resp.status != 200:
                 return f"AI error: {data.get('error', {}).get('message', resp.status)}"
-            return data["choices"][0]["message"]
+            if not isinstance(data, dict) or not data.get("choices"):
+                return f"AI error: unexpected response: {str(data)[:500]}"
+            msg = data["choices"][0].get("message") or {}
+            content = msg.get("content")
+            if isinstance(content, list):
+                content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+            elif content is None:
+                content = msg.get("reasoning")
+            return {"role": "assistant", "content": content, "tool_calls": msg.get("tool_calls")}
     except Exception as e:
         print(f"AI error: {type(e).__name__}: {e}")
         return f"AI is struggling right now ({type(e).__name__}). Try again in a few seconds."
