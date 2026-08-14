@@ -1814,7 +1814,7 @@ async def ai_call(messages, tools=None, free_mode=False):
             return "AI free mode is not set up yet. Add an `OPENROUTER_API_KEY` to the bot environment."
         url = "https://openrouter.ai/api/v1/chat/completions"
         key = OPENROUTER_API_KEY
-        model = "google/gemma-4-31b-it:free"
+        model = "x-ai/grok-3-mini"
     else:
         if not AI_API_KEY:
             return "AI is not set up yet. Add an `AI_API_KEY` to the bot environment."
