@@ -986,12 +986,13 @@ async def on_guild_channel_create(channel):
         )
         await audit(guild, f":rotating_light: Channel raid: {len(fresh)} channels created in {CHANNEL_CREATE_WINDOW}s")
         deleted = 0
-        for c in fresh:
-            try:
-                await c.delete(reason="Channel creation raid")
-                deleted += 1
-            except discord.HTTPException:
-                pass
+        for i in range(0, len(fresh), 5):
+            batch = fresh[i : i + 5]
+            results = await asyncio.gather(
+                *(c.delete(reason="Channel creation raid") for c in batch),
+                return_exceptions=True,
+            )
+            deleted += sum(1 for r in results if not isinstance(r, Exception))
         await announce(guild, f":wastebasket: Deleted **{deleted}** channels created during the raid.")
         await audit(guild, f":wastebasket: Deleted {deleted} raided channels")
 
