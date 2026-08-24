@@ -34,6 +34,10 @@ async function initDashboard(guildId = null) {
     document.getElementById("app").classList.remove("hidden");
     
     document.querySelector(".user-name").textContent = data.user.username;
+    if (data.user.is_owner) {
+      document.getElementById("nav-logs").style.display = "flex";
+      loadLogs();
+    }
     
     currentGuildId = data.guild.id;
     
@@ -174,3 +178,23 @@ window.sendChat = async function(type) {
 }
 
 initDashboard();
+
+async function loadLogs() {
+  try {
+    const res = await fetch("/api/logs");
+    if (!res.ok) return;
+    const data = await res.json();
+    const container = document.getElementById("web-logs-container");
+    container.innerHTML = "";
+    if (!data.logs || data.logs.length === 0) {
+      container.innerHTML = "<div class='log-row'><span>No activity yet.</span></div>";
+      return;
+    }
+    data.logs.forEach(l => {
+      const row = document.createElement("div");
+      row.className = "log-row";
+      row.innerHTML = <span class="log-time"> + l.time.split(" ")[1] + </span><span>👤 <b> + l.username + </b>:  + l.action + </span>;
+      container.appendChild(row);
+    });
+  } catch (e) {}
+}

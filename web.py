@@ -1,9 +1,18 @@
 ﻿import os
 import uuid
 import json
+import datetime
 import aiohttp
 from aiohttp import web
 import bot as bot_module
+
+def web_log(user_id, username, guild_id, action):
+    try:
+        with open("dashboard_logs.json", "r") as f: logs = json.load(f)
+    except: logs = []
+    logs.insert(0, {"time": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"), "user_id": user_id, "username": username, "guild_id": guild_id, "action": action})
+    logs = logs[:1000]
+    with open("dashboard_logs.json", "w") as f: json.dump(logs, f)
 
 SESSIONS = {}
 
@@ -97,7 +106,7 @@ async def api_status(request):
     
     s = bot_module.settings_for(guild.id)
     data = {
-        "user": user,
+        "user": {"username": user["username"], "is_owner": user["user_id"] == bot_module.OWNER_ID},
         "guild": {"id": str(guild.id), "name": guild.name, "member_count": guild.member_count},
         "shared_guilds": shared_guilds,
         "settings": {
@@ -169,7 +178,7 @@ async def api_action(request):
             sys_prompt = bot_module.JUICED_SYSTEM
             tools = bot_module.ADMIN_TOOLS
             
-        messages = [{"role": "system", "content": sys_prompt}]
+        web_log(user["user_id"], user["username"], str(guild.id), f"Used {chat_type} AI: {prompt[:100]}")`n        messages = [{"role": "system", "content": sys_prompt}]
         messages.append({"role": "user", "content": prompt})
         
         try:
@@ -200,6 +209,14 @@ async def api_action(request):
             
     return web.json_response({"error": "Unknown action"}, status=400)
 
+async def api_logs(request):
+    user = get_session(request)
+    if not user or user["user_id"] != bot_module.OWNER_ID: return web.json_response({"error": "Unauthorized"}, status=403)
+    try:
+        with open("dashboard_logs.json", "r") as f: logs = json.load(f)
+    except: logs = []
+    return web.json_response({"logs": logs})
+
 async def start_server(bot):
     app = web.Application()
     app['bot'] = bot
@@ -208,6 +225,7 @@ async def start_server(bot):
     app.router.add_get('/callback', callback)
     app.router.add_get('/api/status', api_status)
     app.router.add_post('/api/action', api_action)
+    app.router.add_get('/api/logs', api_logs)
     app.router.add_static('/', 'website')
     
     runner = web.AppRunner(app)
@@ -216,5 +234,9 @@ async def start_server(bot):
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     print(f"Web dashboard started on port {port}")
+
+
+
+
 
 

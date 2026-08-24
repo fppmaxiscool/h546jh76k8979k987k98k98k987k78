@@ -48,7 +48,7 @@
         <div class="nav-sep">AI TOOLS</div>
         <a href="#" class="nav-item" data-page="aichat"><span>🤖</span> AI Chat</a>
         <a href="#" class="nav-item" data-page="aiadmin"><span>⚙️</span> AI Admin</a>
-        <a href="#" class="nav-item" data-page="aijuiced"><span>⚡</span> AI Juiced</a>
+        <a href="#" class="nav-item" data-page="logs" id="nav-logs" style="display:none;"><span>📜</span> Web Logs</a>`n        <a href="#" class="nav-item" data-page="aijuiced"><span>⚡</span> AI Juiced</a>
       </nav>
       <div class="sidebar-footer">
         <div class="user-pill">
@@ -275,6 +275,17 @@
         </div>
       </section>
 
+      <!-- LOGS PAGE -->
+      <section id="page-logs" class="page">
+        <div class="page-header"><h2>📜 Web Activity Logs</h2><span class="pill red">Owner Only</span></div>
+        <div class="card">
+          <div class="card-title">Recent Dashboard Actions</div>
+          <div class="log-list" id="web-logs-container">
+             <div class="log-row"><span>Loading logs...</span></div>
+          </div>
+        </div>
+      </section>
+
     </main>
   </div>
 
@@ -282,6 +293,7 @@
   <script src="app.js"></script>
 </body>
 </html>
+
 
 
 
