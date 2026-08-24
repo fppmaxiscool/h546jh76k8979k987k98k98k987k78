@@ -48,7 +48,7 @@
         <div class="nav-sep">AI TOOLS</div>
         <a href="#" class="nav-item" data-page="aichat"><span>🤖</span> AI Chat</a>
         <a href="#" class="nav-item" data-page="aiadmin"><span>⚙️</span> AI Admin</a>
-        <a href="#" class="nav-item" data-page="logs" id="nav-logs" style="display:none;"><span>📜</span> Web Logs</a>        <a href="#" class="nav-item" data-page="aijuiced"><span>⚡</span> AI Juiced</a>
+        <a href="#" class="nav-item" data-page="logs" id="nav-logs" style="display:none;"><span>📜</span> Web Logs</a>`n        <a href="#" class="nav-item" data-page="aijuiced"><span>⚡</span> AI Juiced</a>
       </nav>
       <div class="sidebar-footer">
         <div class="user-pill">
@@ -90,9 +90,53 @@
         <div class="card">
           <div class="card-title">Recent Audit Log</div>
           <div class="log-list">
-<div class="log-row"><span>No audit logs to display.</span></div>
-</div>
-<div class="card-title">Actions</div>
+              <div class="log-row"><span class="log-time">-</span><span>No audit logs to display.</span></div>
+            </div>
+        </div>
+      </section>
+
+      <!-- PROTECTION -->
+      <section id="page-protection" class="page">
+        <div class="page-header"><h2>Protection Settings</h2></div>
+        <div class="card">
+          <div class="card-title">Auto-Mod Toggles</div>
+          <div class="toggle-list">
+            <div class="toggle-row"><div><div class="tgl-label">Spam Detection</div><div class="tgl-desc">Auto-mute members who spam</div></div><label class="toggle"><input type="checkbox" id="tgl-spam_detection" /><span class="slider"></span></label></div>
+            <div class="toggle-row"><div><div class="tgl-label">Anti-Link</div><div class="tgl-desc">Block links from non-whitelisted users</div></div><label class="toggle"><input type="checkbox" id="tgl-antilink" /><span class="slider"></span></label></div>
+            <div class="toggle-row"><div><div class="tgl-label">Bad Word Filter</div><div class="tgl-desc">Delete messages with banned words</div></div><label class="toggle"><input type="checkbox" id="tgl-badwords_filter" /><span class="slider"></span></label></div>
+            <div class="toggle-row"><div><div class="tgl-label">Anti-Bot</div><div class="tgl-desc">Auto-kick unapproved bots</div></div><label class="toggle"><input type="checkbox" id="tgl-antibot" /><span class="slider"></span></label></div>
+            <div class="toggle-row"><div><div class="tgl-label">Channel Raid Protection</div><div class="tgl-desc">Lockdown on mass channel creation</div></div><label class="toggle"><input type="checkbox" id="tgl-channel_raid_protection" /><span class="slider"></span></label></div>
+            <div class="toggle-row"><div><div class="tgl-label">Raid Auto-Unlock</div><div class="tgl-desc">Lift lockdown automatically</div></div><label class="toggle"><input type="checkbox" id="tgl-raid_auto_unlock" /><span class="slider"></span></label></div>
+            <div class="toggle-row"><div><div class="tgl-label">Ban New Accounts During Raid</div><div class="tgl-desc">Ban accounts under 1h old</div></div><label class="toggle"><input type="checkbox" id="tgl-raid_ban_new_accounts" /><span class="slider"></span></label></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Spam Thresholds</div>
+          <div class="form-grid">
+            <div class="form-group"><label>Messages per window</label><input type="number" id="inp-spam_count" min="1" /></div>
+            <div class="form-group"><label>Window (seconds)</label><input type="number" id="inp-spam_window" min="1" /></div>
+            <div class="form-group"><label>Mute duration (minutes)</label><input type="number" id="inp-spam_mute_minutes" min="1" /></div>
+            <div class="form-group"><label>Offenses before ban</label><input type="number" id="inp-spam_ban_offenses" min="1" /></div>
+            <div class="form-group"><label>Raid slowmode (0=off)</label><input type="number" id="inp-raid_slowmode" min="0" /></div>
+            <div class="form-group"><label>Room cleanup (days, 0=off)</label><input type="number" id="inp-room_inactive_days" min="0" /></div>
+          </div>
+          <button class="btn-primary" onclick="showToast('Settings saved!')">Save Settings</button>
+        </div>
+        <div class="card">
+          <div class="card-title">🚨 Raid Controls</div>
+          <div class="btn-row">
+            <button class="btn-danger" onclick="showToast('Server locked down!')">Lock Server</button>
+            <button class="btn-success" onclick="showToast('Server unlocked!')">Unlock Server</button>
+            <button class="btn-secondary" onclick="showToast('Raid mode ended!')">End Raid Mode</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- MODERATION -->
+      <section id="page-moderation" class="page">
+        <div class="page-header"><h2>Moderation</h2></div>
+        <div class="card">
+          <div class="card-title">Actions</div>
           <div class="form-grid">
             <div class="form-group full"><label>Target Member (name or ID)</label><input type="text" id="mod-target" placeholder="BadUser#1234 or 123456789" /></div>
             <div class="form-group full"><label>Reason</label><input type="text" id="mod-reason" placeholder="Reason..." /></div>
@@ -109,26 +153,32 @@
         </div>
         <div class="card">
           <div class="card-title">Currently Timed Out</div>
-<div class="member-list">
-<div class="member-row"><span>No users timed out.</span></div>
-</div>
-</div>
-</section>
+          <div class="member-list">
+              <div class="member-row"><span>No users timed out.</span></div>
+            </div>
+        </div>
+      </section>
 
       <!-- WHITELIST -->
       <section id="page-whitelist" class="page">
         <div class="page-header"><h2>Whitelist</h2></div>
         <div class="card">
           <div class="card-title">Whitelisted Users</div>
-                    <div class="member-list" id="wl-users">          </div><div class="add-row"><input type="text" id="wl-user-in" placeholder="User ID or name" /><button class="btn-primary" onclick="addWL('wl-users','wl-user-in','👤')">Add User</button></div>
+          <div class="member-list" id="wl-users">
+          </div>
+          <div class="add-row"><input type="text" id="wl-user-in" placeholder="User ID or name" /><button class="btn-primary" onclick="addWL('wl-users','wl-user-in','👤')">Add User</button></div>
         </div>
         <div class="card">
           <div class="card-title">Whitelisted Roles</div>
-                    <div class="member-list" id="wl-roles">          </div><div class="add-row"><input type="text" id="wl-role-in" placeholder="Role ID or name" /><button class="btn-primary" onclick="addWL('wl-roles','wl-role-in','🎭')">Add Role</button></div>
+          <div class="member-list" id="wl-roles">
+          </div>
+          <div class="add-row"><input type="text" id="wl-role-in" placeholder="Role ID or name" /><button class="btn-primary" onclick="addWL('wl-roles','wl-role-in','🎭')">Add Role</button></div>
         </div>
         <div class="card">
           <div class="card-title">Link Whitelist</div>
-                    <div class="member-list" id="wl-links">          </div><div class="add-row"><input type="text" id="wl-link-in" placeholder="domain.com" /><button class="btn-primary" onclick="addWL('wl-links','wl-link-in','🔗')">Add Domain</button></div>
+          <div class="member-list" id="wl-links">
+          </div>
+          <div class="add-row"><input type="text" id="wl-link-in" placeholder="domain.com" /><button class="btn-primary" onclick="addWL('wl-links','wl-link-in','🔗')">Add Domain</button></div>
         </div>
       </section>
 
@@ -138,8 +188,8 @@
         <div class="card">
           <div class="card-title">Active Triggers</div>
           <div class="ar-list" id="ar-list">
-</div>
-<div class="add-row ar-add-row">
+            </div>
+          <div class="add-row ar-add-row">
             <input type="text" id="ar-trig" placeholder="Trigger word" />
             <input type="text" id="ar-rep" placeholder="Bot reply" />
             <button class="btn-primary" onclick="addAR()">Add</button>
@@ -152,11 +202,11 @@
         <div class="page-header"><h2>Tickets</h2></div>
         <div class="card">
           <div class="card-title">Open Tickets</div>
-<div class="member-list">
-<div class="member-row"><span>No open tickets.</span></div>
-</div>
-</div>
-<div class="card">
+          <div class="member-list">
+              <div class="member-row"><span>No open tickets.</span></div>
+            </div>
+        </div>
+        <div class="card">
           <div class="card-title">Ticket Setup</div>
           <div class="form-grid">
             <div class="form-group"><label>Support Role ID</label><input type="text" placeholder="Role ID..." /></div>
@@ -228,9 +278,6 @@
   <script src="app.js"></script>
 </body>
 </html>
-
-
-
 
 
 
