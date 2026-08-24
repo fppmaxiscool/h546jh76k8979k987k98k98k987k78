@@ -141,7 +141,17 @@ async def api_action(request):
     action = data.get("action")
     bot = request.app['bot']
     
-    req_guild_id = data.get("guild_id")`r`n    guild = None`r`n    if req_guild_id:`r`n        guild = bot.get_guild(int(req_guild_id))`r`n    else:`r`n        guild = bot.guilds[0] if bot.guilds else None`r`n`r`n    if not guild: return web.json_response({"error": "No guild selected"})`r`n    `r`n    if user["user_id"] != bot_module.OWNER_ID and user["user_id"] not in bot_module.settings_for(guild.id).whitelisted_users:`r`n        return web.json_response({"error": "Access Denied for this server"}, status=403)
+    req_guild_id = data.get("guild_id")
+    guild = None
+    if req_guild_id:
+        guild = bot.get_guild(int(req_guild_id))
+    else:
+        guild = bot.guilds[0] if bot.guilds else None
+
+    if not guild: return web.json_response({"error": "No guild selected"})
+    
+    if user["user_id"] != bot_module.OWNER_ID and user["user_id"] not in bot_module.settings_for(guild.id).whitelisted_users:
+        return web.json_response({"error": "Access Denied for this server"}, status=403)
     s = bot_module.settings_for(guild.id)
     
     if action == "toggle_setting":
@@ -178,7 +188,8 @@ async def api_action(request):
             sys_prompt = bot_module.JUICED_SYSTEM
             tools = bot_module.ADMIN_TOOLS
             
-        web_log(user["user_id"], user["username"], str(guild.id), f"Used {chat_type} AI: {prompt[:100]}")`n        messages = [{"role": "system", "content": sys_prompt}]
+        web_log(user["user_id"], user["username"], str(guild.id), f"Used {chat_type} AI: {prompt[:100]}")
+        messages = [{"role": "system", "content": sys_prompt}]
         messages.append({"role": "user", "content": prompt})
         
         try:
@@ -234,6 +245,8 @@ async def start_server(bot):
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     print(f"Web dashboard started on port {port}")
+
+
 
 
 
