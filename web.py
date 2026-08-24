@@ -220,6 +220,28 @@ async def api_action(request):
             
     return web.json_response({"error": "Unknown action"}, status=400)
 
+async def api_timed_out(request):
+    user = get_session(request)
+    if not user: return web.json_response({"error": "Unauthorized"}, status=401)
+    bot = request.app["bot"]
+    req_guild_id = request.query.get("guild_id")
+    guild = None
+    if req_guild_id:
+        guild = bot.get_guild(int(req_guild_id))
+    if not guild and bot.guilds:
+        guild = bot.guilds[0]
+    if not guild: return web.json_response({"members": []})
+    if user["user_id"] != bot_module.OWNER_ID and user["user_id"] not in bot_module.settings_for(guild.id).whitelisted_users:
+        return web.json_response({"error": "Access Denied"}, status=403)
+    timed_out = []
+    for m in guild.members:
+        if m.timed_out_until:
+            timed_out.append({
+                "id": str(m.id),
+                "name": m.display_name,
+                "until": m.timed_out_until.strftime("%Y-%m-%d %H:%M UTC")
+            })
+    return web.json_response({"members": timed_out})
 async def api_logs(request):
     user = get_session(request)
     if not user or user["user_id"] != bot_module.OWNER_ID: return web.json_response({"error": "Unauthorized"}, status=403)
@@ -236,6 +258,7 @@ async def start_server(bot):
     app.router.add_get('/callback', callback)
     app.router.add_get('/api/status', api_status)
     app.router.add_post('/api/action', api_action)
+    app.router.add_get('/api/timed_out', api_timed_out)
     app.router.add_get('/api/logs', api_logs)
     app.router.add_static('/', 'website')
     
@@ -245,6 +268,7 @@ async def start_server(bot):
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     print(f"Web dashboard started on port {port}")
+
 
 
 

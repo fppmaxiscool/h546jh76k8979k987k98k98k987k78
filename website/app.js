@@ -40,6 +40,7 @@ async function initDashboard(guildId = null) {
     }
     
     currentGuildId = data.guild.id;
+    loadTimedOut();
     
     const sel = document.getElementById("guild-selector");
     sel.innerHTML = "";
@@ -78,6 +79,7 @@ async function initDashboard(guildId = null) {
 
 document.getElementById("guild-selector").addEventListener("change", (e) => {
   initDashboard(e.target.value);
+  loadTimedOut();
 });
 
 document.querySelectorAll('.toggle input[type="checkbox"]').forEach(el => {
@@ -197,5 +199,33 @@ async function loadLogs() {
       container.appendChild(row);
     });
   } catch (e) {}
+}
+
+
+async function loadTimedOut() {
+  try {
+    const url = currentGuildId ? `/api/timed_out?guild_id=${currentGuildId}` : "/api/timed_out";
+    const res = await fetch(url);
+    const data = await res.json();
+    const container = document.querySelector(".card-title ~ .member-list") || document.getElementById("timed-out-list");
+    
+    // Find the "Currently Timed Out" card
+    document.querySelectorAll(".card-title").forEach(title => {
+      if (title.textContent.trim() === "Currently Timed Out") {
+        const list = title.nextElementSibling;
+        list.innerHTML = "";
+        if (!data.members || data.members.length === 0) {
+          list.innerHTML = "<div class='member-row'><span>No users timed out.</span></div>";
+          return;
+        }
+        data.members.forEach(m => {
+          const row = document.createElement("div");
+          row.className = "member-row";
+          row.innerHTML = `<span>🔇 ${m.name} <span class="muted">(${m.id})</span></span><span class="muted">until ${m.until}</span>`;
+          list.appendChild(row);
+        });
+      }
+    });
+  } catch(e) { console.error("Failed to load timed out members", e); }
 }
 
