@@ -33,7 +33,7 @@ async function initDashboard(guildId = null) {
 
     const data = await res.json();
 
-    if (data.error) {
+        if (data.error) {
       // Still show app if we got a non-auth error
       if (res.status === 403) {
         showToast("Access denied: " + data.error, true);
@@ -41,6 +41,7 @@ async function initDashboard(guildId = null) {
         document.getElementById("app").classList.add("hidden");
       } else {
         showToast("API error: " + data.error, true);
+        document.querySelector(".user-name").textContent = "API ERROR: " + data.error;
       }
       return;
     }
@@ -109,9 +110,10 @@ async function initDashboard(guildId = null) {
     loadAutoResponses();
     loadTickets();
 
-  } catch(err) {
+    } catch(err) {
     console.error("initDashboard error:", err);
     showToast("Dashboard error: " + err.message, true);
+    document.querySelector(".user-name").textContent = "JS ERROR: " + err.message;
   }
 }
 
@@ -344,5 +346,6 @@ document.querySelectorAll(".nav-item[data-page]").forEach(link => {
 
 // ── BOOT ─────────────────────────────────────
 initDashboard();
+
 
 
