@@ -193,8 +193,9 @@ async function loadLogs() {
     data.logs.forEach(l => {
       const row = document.createElement("div");
       row.className = "log-row";
-      row.innerHTML = <span class="log-time"> + l.time.split(" ")[1] + </span><span>👤 <b> + l.username + </b>:  + l.action + </span>;
+      row.innerHTML = `<span class="log-time">${l.time.split(" ")[1]}</span><span>👤 <b>${l.username}</b>: ${l.action}</span>`;
       container.appendChild(row);
     });
   } catch (e) {}
 }
+
