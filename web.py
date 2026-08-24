@@ -35,7 +35,7 @@ async def login(request):
     if not CLIENT_ID:
         sid = str(uuid.uuid4())
         SESSIONS[sid] = {"user_id": bot_module.OWNER_ID, "username": "LocalAdmin"}
-        resp = web.HTTPFound("/"); resp.set_cookie("dash_session", sid); return resp
+        resp = web.HTTPFound("/"); resp.set_cookie("dash_session", sid, httponly=True, samesite="Lax", max_age=86400); return resp
     host = request.headers.get("Host", "")
     proto = request.headers.get("X-Forwarded-Proto", "http")
     redirect_uri = f"{proto}://{host}/callback"
@@ -56,7 +56,7 @@ async def callback(request):
     trusted = uid == bot_module.OWNER_ID or any(uid in s.whitelisted_users for s in bot_module.SETTINGS.values())
     if not trusted: return web.Response(text="Access Denied.", status=403)
     sid = str(uuid.uuid4()); SESSIONS[sid] = {"user_id": uid, "username": u["username"]}
-    resp = web.HTTPFound("/"); resp.set_cookie("dash_session", sid); return resp
+    resp = web.HTTPFound("/"); resp.set_cookie("dash_session", sid, httponly=True, samesite="Lax", max_age=86400); return resp
 
 async def index(request): return web.FileResponse("website/index.html")
 
@@ -270,6 +270,18 @@ async def api_action(request):
         except Exception as e: return web.json_response({"reply": f"AI error: {e}"})
     return web.json_response({"error": "Unknown action"}, status=400)
 
+async def api_debug(request):
+    user = get_session(request)
+    if not user or user["user_id"] != bot_module.OWNER_ID:
+        return web.json_response({"error": "Unauthorized"}, status=403)
+    bot = request.app["bot"]
+    guilds = [{"id": str(g.id), "name": g.name} for g in bot.guilds]
+    guild = bot.guilds[0] if bot.guilds else None
+    settings = {}
+    if guild:
+        s = bot_module.settings_for(guild.id)
+        settings = {k: getattr(s, k) for k in ["spam_detection","antilink","badwords_filter","antibot","channel_raid_protection","raid_auto_unlock","raid_ban_new_accounts","spam_count","spam_window","spam_mute_minutes","spam_ban_offenses","raid_slowmode","room_inactive_days"] if hasattr(s, k)}
+    return web.json_response({"user": user, "guilds": guilds, "settings": settings})
 async def api_logs(request):
     user = get_session(request)
     if not user or user["user_id"] != bot_module.OWNER_ID: return web.json_response({"error": "Unauthorized"}, status=403)
@@ -301,4 +313,6 @@ async def start_server(bot):
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     print(f"Web dashboard started on port {port}")
+
+
 

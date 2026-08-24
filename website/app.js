@@ -21,80 +21,98 @@ async function apiFetch(url, opts = {}) {
 
 // ── INIT ─────────────────────────────────────
 async function initDashboard(guildId = null) {
-  const url = guildId ? `/api/status?guild_id=${guildId}` : "/api/status";
-  const res = await apiFetch(url);
-  if (!res) return;
+  try {
+    const url = guildId ? `/api/status?guild_id=${guildId}` : "/api/status";
+    const res = await fetch(url);
+    
+    if (res.status === 401) {
+      document.getElementById("login-screen").style.display = "";
+      document.getElementById("app").classList.add("hidden");
+      return;
+    }
 
-  if (res.status === 401) {
-    document.getElementById("login-screen").style.display = "";
-    document.getElementById("app").classList.add("hidden");
-    return;
-  }
+    const data = await res.json();
 
-  const data = await res.json();
-  if (data.error) { showToast(data.error, true); return; }
+    if (data.error) {
+      // Still show app if we got a non-auth error
+      if (res.status === 403) {
+        showToast("Access denied: " + data.error, true);
+        document.getElementById("login-screen").style.display = "";
+        document.getElementById("app").classList.add("hidden");
+      } else {
+        showToast("API error: " + data.error, true);
+      }
+      return;
+    }
 
-  document.getElementById("login-screen").style.display = "none";
-  document.getElementById("app").classList.remove("hidden");
-  document.querySelector(".user-name").textContent = data.user.username;
+    document.getElementById("login-screen").style.display = "none";
+    document.getElementById("app").classList.remove("hidden");
+    document.querySelector(".user-name").textContent = data.user.username;
 
-  currentGuildId = data.guild.id;
+    currentGuildId = data.guild.id;
 
-  // Guild selector
-  const sel = document.getElementById("guild-selector");
-  sel.innerHTML = "";
-  data.shared_guilds.forEach(g => {
-    const opt = document.createElement("option");
-    opt.value = g.id; opt.textContent = g.name;
-    if (g.id === currentGuildId) opt.selected = true;
-    sel.appendChild(opt);
-  });
-
-  // Stats
-  const stats = document.querySelectorAll(".stat-value");
-  if (stats[0]) stats[0].textContent = data.guild.member_count;
-  if (stats[1]) stats[1].textContent = data.stats.total_messages || 0;
-
-  // Audit log
-  const logList = document.querySelector(".log-list");
-  if (logList) {
-    logList.innerHTML = "";
-    if (!data.audit_log || data.audit_log.length === 0) {
-      logList.innerHTML = "<div class='log-row'><span>No audit log entries yet.</span></div>";
-    } else {
-      data.audit_log.forEach(e => {
-        const row = document.createElement("div"); row.className = "log-row";
-        row.innerHTML = `<span class="log-time">${e.time}</span><span><b>${e.actor}</b>: ${e.action} → ${e.target}</span>`;
-        logList.appendChild(row);
+    // Guild selector
+    const sel = document.getElementById("guild-selector");
+    if (sel) {
+      sel.innerHTML = "";
+      data.shared_guilds.forEach(g => {
+        const opt = document.createElement("option");
+        opt.value = g.id; opt.textContent = g.name;
+        if (g.id === currentGuildId) opt.selected = true;
+        sel.appendChild(opt);
       });
     }
+
+    // Stats
+    const stats = document.querySelectorAll(".stat-value");
+    if (stats[0]) stats[0].textContent = data.guild.member_count;
+    if (stats[1]) stats[1].textContent = (data.stats && data.stats.total_messages) || 0;
+
+    // Audit log
+    const logList = document.querySelector(".log-list");
+    if (logList) {
+      logList.innerHTML = "";
+      if (data.audit_log && data.audit_log.length > 0) {
+        data.audit_log.forEach(e => {
+          const row = document.createElement("div"); row.className = "log-row";
+          row.innerHTML = `<span class="log-time">${e.time}</span><span><b>${e.actor}</b>: ${e.action} &rarr; ${e.target}</span>`;
+          logList.appendChild(row);
+        });
+      } else {
+        logList.innerHTML = "<div class='log-row'><span>No audit log entries yet.</span></div>";
+      }
+    }
+
+    // Toggles - DEFENSIVE
+    if (data.settings) {
+      const s = data.settings;
+      ["spam_detection","antilink","badwords_filter","antibot","channel_raid_protection","raid_auto_unlock","raid_ban_new_accounts"].forEach(k => {
+        const el = document.getElementById("tgl-" + k);
+        if (el) el.checked = s[k] === true || s[k] === "true";
+      });
+      ["spam_count","spam_window","spam_mute_minutes","spam_ban_offenses","raid_slowmode","room_inactive_days"].forEach(k => {
+        const el = document.getElementById("inp-" + k);
+        if (el && s[k] !== undefined) el.value = s[k];
+      });
+    }
+
+    // Owner-only
+    if (data.user.is_owner) {
+      const navLogs = document.getElementById("nav-logs");
+      if (navLogs) navLogs.style.display = "flex";
+      loadLogs();
+    }
+
+    // Load all live page data
+    loadTimedOut();
+    loadWhitelist();
+    loadAutoResponses();
+    loadTickets();
+
+  } catch(err) {
+    console.error("initDashboard error:", err);
+    showToast("Dashboard error: " + err.message, true);
   }
-
-  // Toggles
-  const s = data.settings;
-  ["spam_detection","antilink","badwords_filter","antibot","channel_raid_protection","raid_auto_unlock","raid_ban_new_accounts"].forEach(k => {
-    const el = document.getElementById("tgl-" + k);
-    if (el) el.checked = !!s[k];
-  });
-
-  // Thresholds
-  ["spam_count","spam_window","spam_mute_minutes","spam_ban_offenses","raid_slowmode","room_inactive_days"].forEach(k => {
-    const el = document.getElementById("inp-" + k);
-    if (el) el.value = s[k];
-  });
-
-  // Owner-only tabs
-  if (data.user.is_owner) {
-    const navLogs = document.getElementById("nav-logs");
-    if (navLogs) navLogs.style.display = "flex";
-    loadLogs();
-  }
-
-  // Load live data for other pages
-  loadTimedOut();
-  loadWhitelist();
-  loadAutoResponses();
-  loadTickets();
 }
 
 // ── GUILD SELECTOR ──────────────────────────
@@ -326,4 +344,5 @@ document.querySelectorAll(".nav-item[data-page]").forEach(link => {
 
 // ── BOOT ─────────────────────────────────────
 initDashboard();
+
 
