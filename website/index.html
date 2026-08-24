@@ -105,24 +105,24 @@
         <div class="card">
           <div class="card-title">Auto-Mod Toggles</div>
           <div class="toggle-list">
-            <div class="toggle-row"><div><div class="tgl-label">Spam Detection</div><div class="tgl-desc">Auto-mute members who spam</div></div><label class="toggle"><input type="checkbox" checked /><span class="slider"></span></label></div>
-            <div class="toggle-row"><div><div class="tgl-label">Anti-Link</div><div class="tgl-desc">Block links from non-whitelisted users</div></div><label class="toggle"><input type="checkbox" checked /><span class="slider"></span></label></div>
-            <div class="toggle-row"><div><div class="tgl-label">Bad Word Filter</div><div class="tgl-desc">Delete messages with banned words</div></div><label class="toggle"><input type="checkbox" checked /><span class="slider"></span></label></div>
-            <div class="toggle-row"><div><div class="tgl-label">Anti-Bot</div><div class="tgl-desc">Auto-kick unapproved bots</div></div><label class="toggle"><input type="checkbox" checked /><span class="slider"></span></label></div>
-            <div class="toggle-row"><div><div class="tgl-label">Channel Raid Protection</div><div class="tgl-desc">Lockdown on mass channel creation</div></div><label class="toggle"><input type="checkbox" checked /><span class="slider"></span></label></div>
-            <div class="toggle-row"><div><div class="tgl-label">Raid Auto-Unlock</div><div class="tgl-desc">Lift lockdown automatically</div></div><label class="toggle"><input type="checkbox" checked /><span class="slider"></span></label></div>
-            <div class="toggle-row"><div><div class="tgl-label">Ban New Accounts During Raid</div><div class="tgl-desc">Ban accounts under 1h old</div></div><label class="toggle"><input type="checkbox" checked /><span class="slider"></span></label></div>
+            <div class="toggle-row"><div><div class="tgl-label">Spam Detection</div><div class="tgl-desc">Auto-mute members who spam</div></div><label class="toggle"><input type="checkbox" id="tgl-spam_detection" /><span class="slider"></span></label></div>
+            <div class="toggle-row"><div><div class="tgl-label">Anti-Link</div><div class="tgl-desc">Block links from non-whitelisted users</div></div><label class="toggle"><input type="checkbox" id="tgl-antilink" /><span class="slider"></span></label></div>
+            <div class="toggle-row"><div><div class="tgl-label">Bad Word Filter</div><div class="tgl-desc">Delete messages with banned words</div></div><label class="toggle"><input type="checkbox" id="tgl-badwords_filter" /><span class="slider"></span></label></div>
+            <div class="toggle-row"><div><div class="tgl-label">Anti-Bot</div><div class="tgl-desc">Auto-kick unapproved bots</div></div><label class="toggle"><input type="checkbox" id="tgl-antibot" /><span class="slider"></span></label></div>
+            <div class="toggle-row"><div><div class="tgl-label">Channel Raid Protection</div><div class="tgl-desc">Lockdown on mass channel creation</div></div><label class="toggle"><input type="checkbox" id="tgl-channel_raid_protection" /><span class="slider"></span></label></div>
+            <div class="toggle-row"><div><div class="tgl-label">Raid Auto-Unlock</div><div class="tgl-desc">Lift lockdown automatically</div></div><label class="toggle"><input type="checkbox" id="tgl-raid_auto_unlock" /><span class="slider"></span></label></div>
+            <div class="toggle-row"><div><div class="tgl-label">Ban New Accounts During Raid</div><div class="tgl-desc">Ban accounts under 1h old</div></div><label class="toggle"><input type="checkbox" id="tgl-raid_ban_new_accounts" /><span class="slider"></span></label></div>
           </div>
         </div>
         <div class="card">
           <div class="card-title">Spam Thresholds</div>
           <div class="form-grid">
-            <div class="form-group"><label>Messages per window</label><input type="number" value="5" min="1" /></div>
-            <div class="form-group"><label>Window (seconds)</label><input type="number" value="5" min="1" /></div>
-            <div class="form-group"><label>Mute duration (minutes)</label><input type="number" value="10" min="1" /></div>
-            <div class="form-group"><label>Offenses before ban</label><input type="number" value="3" min="1" /></div>
-            <div class="form-group"><label>Raid slowmode (0=off)</label><input type="number" value="0" min="0" /></div>
-            <div class="form-group"><label>Room cleanup (days, 0=off)</label><input type="number" value="14" min="0" /></div>
+            <div class="form-group"><label>Messages per window</label><input type="number" id="inp-spam_count" min="1" /></div>
+            <div class="form-group"><label>Window (seconds)</label><input type="number" id="inp-spam_window" min="1" /></div>
+            <div class="form-group"><label>Mute duration (minutes)</label><input type="number" id="inp-spam_mute_minutes" min="1" /></div>
+            <div class="form-group"><label>Offenses before ban</label><input type="number" id="inp-spam_ban_offenses" min="1" /></div>
+            <div class="form-group"><label>Raid slowmode (0=off)</label><input type="number" id="inp-raid_slowmode" min="0" /></div>
+            <div class="form-group"><label>Room cleanup (days, 0=off)</label><input type="number" id="inp-room_inactive_days" min="0" /></div>
           </div>
           <button class="btn-primary" onclick="showToast('Settings saved!')">Save Settings</button>
         </div>
@@ -282,3 +282,6 @@
   <script src="app.js"></script>
 </body>
 </html>
+
+
+
