@@ -164,16 +164,44 @@ async def api_action(request):
         prompt = data.get("message")
         chat_type = data.get("type", "aichat")
         
-        # We will directly query deepseek with a simple prompt depending on chat_type
         if not bot_module.AI_API_KEY:
             return web.json_response({"reply": "Error: AI_API_KEY is not set in the bot's environment!"})
             
-        messages = [{"role": "system", "content": "You are a helpful discord bot assistant. Please provide concise answers."}]
+        sys_prompt = "You are a helpful discord bot assistant. Please provide concise answers."
+        tools = None
+        if chat_type == "aiadmin":
+            sys_prompt = bot_module.ADMIN_SYSTEM
+            tools = bot_module.ADMIN_TOOLS
+        elif chat_type == "aijuiced":
+            sys_prompt = bot_module.JUICED_SYSTEM
+            tools = bot_module.ADMIN_TOOLS
+            
+        messages = [{"role": "system", "content": sys_prompt}]
         messages.append({"role": "user", "content": prompt})
         
         try:
-            resp_data = await bot_module.ai_call(messages)
-            return web.json_response({"reply": str(resp_data)})
+            while True:
+                resp_data = await bot_module.ai_call(messages, tools=tools)
+                if isinstance(resp_data, str):
+                    return web.json_response({"reply": resp_data})
+                
+                if resp_data.get("tool_calls"):
+                    messages.append({"role": "assistant", "content": resp_data.get("content") or "", "tool_calls": resp_data["tool_calls"]})
+                    for tc in resp_data["tool_calls"]:
+                        fname = tc["function"]["name"]
+                        try:
+                            targs = json.loads(tc["function"]["arguments"] or "{}")
+                        except json.JSONDecodeError:
+                            targs = {}
+                        try:
+                            res = await bot_module.run_admin_tool(guild, fname, targs)
+                            if not isinstance(res, str): res = json.dumps(res)
+                        except Exception as e:
+                            res = f"Error: {e}"
+                        messages.append({"role": "tool", "tool_call_id": tc["id"], "content": res})
+                else:
+                    reply_str = resp_data.get("content") if isinstance(resp_data, dict) else str(resp_data)
+                    return web.json_response({"reply": reply_str})
         except Exception as e:
             return web.json_response({"reply": f"AI backend error: {e}"})
             
