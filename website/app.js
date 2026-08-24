@@ -3,6 +3,7 @@
 // ============================================================
 
 let toastTimer = null;
+let currentGuildId = null;
 
 function showToast(msg) {
   const t = document.getElementById("toast");
@@ -13,9 +14,10 @@ function showToast(msg) {
 }
 
 // Initial Load
-async function initDashboard() {
+async function initDashboard(guildId = null) {
   try {
-    const res = await fetch("/api/status");
+    const url = guildId ? `/api/status?guild_id=${guildId}` : "/api/status";
+    const res = await fetch(url);
     if (res.status === 401) {
       document.getElementById("login-screen").style.display = "";
       document.getElementById("app").classList.add("hidden");
@@ -28,19 +30,26 @@ async function initDashboard() {
       return;
     }
     
-    // Hide login, show app
     document.getElementById("login-screen").style.display = "none";
     document.getElementById("app").classList.remove("hidden");
     
-    // Populate user
     document.querySelector(".user-name").textContent = data.user.username;
     
-    // Populate stats
-    document.querySelector(".guild-name").textContent = data.guild.name;
+    currentGuildId = data.guild.id;
+    
+    const sel = document.getElementById("guild-selector");
+    sel.innerHTML = "";
+    data.shared_guilds.forEach(g => {
+      const opt = document.createElement("option");
+      opt.value = g.id;
+      opt.textContent = g.name;
+      if (g.id === currentGuildId) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    
     document.querySelectorAll(".stat-value")[0].textContent = data.guild.member_count;
     document.querySelectorAll(".stat-value")[1].textContent = data.stats.total_messages || 0;
     
-    // Populate settings toggles
     const s = data.settings;
     document.getElementById("tgl-spam_detection").checked = s.spam_detection;
     document.getElementById("tgl-antilink").checked = s.antilink;
@@ -50,7 +59,6 @@ async function initDashboard() {
     document.getElementById("tgl-raid_auto_unlock").checked = s.raid_auto_unlock;
     document.getElementById("tgl-raid_ban_new_accounts").checked = s.raid_ban_new_accounts;
     
-    // Populate thresholds
     document.getElementById("inp-spam_count").value = s.spam_count;
     document.getElementById("inp-spam_window").value = s.spam_window;
     document.getElementById("inp-spam_mute_minutes").value = s.spam_mute_minutes;
@@ -64,7 +72,10 @@ async function initDashboard() {
   }
 }
 
-// Add event listeners to toggles
+document.getElementById("guild-selector").addEventListener("change", (e) => {
+  initDashboard(e.target.value);
+});
+
 document.querySelectorAll('.toggle input[type="checkbox"]').forEach(el => {
   el.addEventListener("change", async (e) => {
     const key = e.target.id.replace("tgl-", "");
@@ -72,19 +83,19 @@ document.querySelectorAll('.toggle input[type="checkbox"]').forEach(el => {
     await fetch("/api/action", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({action: "toggle_setting", key: key, value: val})
+      body: JSON.stringify({action: "toggle_setting", key: key, value: val, guild_id: currentGuildId})
     });
     showToast("Setting updated!");
   });
 });
 
-// Update thresholds function
 window.saveThresholds = async function() {
   await fetch("/api/action", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({
       action: "update_thresholds",
+      guild_id: currentGuildId,
       spam_count: document.getElementById("inp-spam_count").value,
       spam_window: document.getElementById("inp-spam_window").value,
       spam_mute_minutes: document.getElementById("inp-spam_mute_minutes").value,
@@ -96,10 +107,8 @@ window.saveThresholds = async function() {
   showToast("Thresholds saved!");
 };
 
-// Hook threshold save button
 document.querySelector('#page-protection .btn-primary').onclick = saveThresholds;
 
-// --- LOGIN/LOGOUT ---
 document.getElementById("login-btn").addEventListener("click", () => {
   window.location.href = "/login";
 });
@@ -109,7 +118,6 @@ document.getElementById("logout-btn").addEventListener("click", () => {
   window.location.reload();
 });
 
-// --- NAV ---
 document.querySelectorAll(".nav-item[data-page]").forEach(link => {
   link.addEventListener("click", e => {
     e.preventDefault();
@@ -121,18 +129,12 @@ document.querySelectorAll(".nav-item[data-page]").forEach(link => {
   });
 });
 
-// --- MOD ACTION (Placeholder for future API expansion) ---
 window.modAction = async function(action) {
   const target = document.getElementById("mod-target").value.trim();
   if (!target) { showToast("⚠️ Enter a target member first"); return; }
-  
-  // Real implementation would send this to /api/action
-  // await fetch("/api/action", { method: "POST", body: JSON.stringify({ action: "moderate", type: action, target: target }) });
-  
   showToast(`[API Connected] Sent ${action} command for ${target}`);
 }
 
-// --- AI CHAT ---
 window.sendChat = async function(type) {
   const input = document.getElementById("in-" + type);
   const log   = document.getElementById("log-" + type);
@@ -155,7 +157,7 @@ window.sendChat = async function(type) {
     const res = await fetch("/api/action", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({action: "ai_chat", type: type, message: msg})
+      body: JSON.stringify({action: "ai_chat", type: type, message: msg, guild_id: currentGuildId})
     });
     const data = await res.json();
     
@@ -171,5 +173,4 @@ window.sendChat = async function(type) {
   }
 }
 
-// Start
 initDashboard();

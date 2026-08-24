@@ -1,5 +1,6 @@
 ﻿import os
 import uuid
+import json
 import aiohttp
 from aiohttp import web
 import bot as bot_module
@@ -78,13 +79,27 @@ async def api_status(request):
     if not user: return web.json_response({"error": "Unauthorized"}, status=401)
     
     bot = request.app['bot']
-    guild = bot.guilds[0] if bot.guilds else None
-    if not guild: return web.json_response({"error": "Bot is not in any servers"})
+    
+    shared_guilds = []
+    for g in bot.guilds:
+        if user["user_id"] == bot_module.OWNER_ID or user["user_id"] in bot_module.settings_for(g.id).whitelisted_users:
+            shared_guilds.append({"id": str(g.id), "name": g.name})
+            
+    if not shared_guilds:
+        return web.json_response({"error": "Bot is not in any shared servers where you are an admin."})
+        
+    req_guild_id = request.query.get("guild_id")
+    guild = None
+    if req_guild_id:
+        guild = bot.get_guild(int(req_guild_id))
+    if not guild:
+        guild = bot.get_guild(int(shared_guilds[0]["id"]))
     
     s = bot_module.settings_for(guild.id)
     data = {
         "user": user,
-        "guild": {"name": guild.name, "member_count": guild.member_count},
+        "guild": {"id": str(guild.id), "name": guild.name, "member_count": guild.member_count},
+        "shared_guilds": shared_guilds,
         "settings": {
             "raiding": s.raiding,
             "spam_detection": s.spam_detection,
@@ -100,9 +115,69 @@ async def api_status(request):
             "room_inactive_days": s.room_inactive_days,
             "raid_auto_unlock": s.raid_auto_unlock,
             "raid_ban_new_accounts": s.raid_ban_new_accounts,
-        }
+        },
+        "stats": dict(bot_module.MESSAGE_STATS),
     }
     return web.json_response(data)
+
+async def api_action(request):
+    user = get_session(request)
+    if not user: return web.json_response({"error": "Unauthorized"}, status=401)
+        
+    try:
+        data = await request.json()
+    except:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+        
+    action = data.get("action")
+    bot = request.app['bot']
+    
+    req_guild_id = data.get("guild_id")
+    guild = None
+    if req_guild_id:
+        guild = bot.get_guild(int(req_guild_id))
+    else:
+        guild = bot.guilds[0] if bot.guilds else None
+        
+    if not guild: return web.json_response({"error": "No guild selected"})
+    s = bot_module.settings_for(guild.id)
+    
+    if action == "toggle_setting":
+        key = data.get("key")
+        val = data.get("value")
+        if hasattr(s, key):
+            setattr(s, key, val)
+            bot_module.save_config(guild.id)
+            return web.json_response({"success": True})
+            
+    elif action == "update_thresholds":
+        s.spam_count = int(data.get("spam_count", s.spam_count))
+        s.spam_window = int(data.get("spam_window", s.spam_window))
+        s.spam_mute_minutes = int(data.get("spam_mute_minutes", s.spam_mute_minutes))
+        s.spam_ban_offenses = int(data.get("spam_ban_offenses", s.spam_ban_offenses))
+        s.raid_slowmode = int(data.get("raid_slowmode", s.raid_slowmode))
+        s.room_inactive_days = int(data.get("room_inactive_days", s.room_inactive_days))
+        bot_module.save_config(guild.id)
+        return web.json_response({"success": True})
+        
+    elif action == "ai_chat":
+        prompt = data.get("message")
+        chat_type = data.get("type", "aichat")
+        
+        # We will directly query deepseek with a simple prompt depending on chat_type
+        if not bot_module.AI_API_KEY:
+            return web.json_response({"reply": "Error: AI_API_KEY is not set in the bot's environment!"})
+            
+        messages = [{"role": "system", "content": "You are a helpful discord bot assistant. Please provide concise answers."}]
+        messages.append({"role": "user", "content": prompt})
+        
+        try:
+            resp_data = await bot_module.ai_call(messages)
+            return web.json_response({"reply": str(resp_data)})
+        except Exception as e:
+            return web.json_response({"reply": f"AI backend error: {e}"})
+            
+    return web.json_response({"error": "Unknown action"}, status=400)
 
 async def start_server(bot):
     app = web.Application()
@@ -111,6 +186,7 @@ async def start_server(bot):
     app.router.add_get('/login', login)
     app.router.add_get('/callback', callback)
     app.router.add_get('/api/status', api_status)
+    app.router.add_post('/api/action', api_action)
     app.router.add_static('/', 'website')
     
     runner = web.AppRunner(app)

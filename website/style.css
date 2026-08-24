@@ -255,3 +255,5 @@ input[type="text"]:focus, input[type="number"]:focus, textarea:focus { border-co
   .sidebar { display: none; }
   .content { padding: 16px; }
 }
+
+.guild-selector { background: transparent; border: none; color: #fff; font-weight: 700; font-size: 14px; cursor: pointer; outline: none; width: 100%; } .guild-selector option { background: var(--bg2); color: #fff; }
