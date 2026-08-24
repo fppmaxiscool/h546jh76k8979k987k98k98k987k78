@@ -16,7 +16,6 @@ function showToast(msg, isError = false) {
 
 async function apiFetch(url, opts = {}) {
   const res = await fetch(url, opts);
-  if (res.status === 401) { window.location.reload(); return null; }
   return res;
 }
 
@@ -327,3 +326,4 @@ document.querySelectorAll(".nav-item[data-page]").forEach(link => {
 
 // ── BOOT ─────────────────────────────────────
 initDashboard();
+
