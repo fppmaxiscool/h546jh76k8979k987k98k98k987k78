@@ -879,6 +879,13 @@ async def scheduler_loop():
 
 @bot.event
 async def on_ready():
+    if not hasattr(bot, 'web_started'):
+        bot.web_started = True
+        try:
+            import web
+            bot.loop.create_task(web.start_server(bot))
+        except ImportError:
+            pass
     if load_config():
         print("Loaded config from bot-config.json")
     load_stats()
@@ -2450,7 +2457,7 @@ async def run_admin_tool(guild, name, args):
         member, err = resolve_member_arg(guild, args)
         if err:
             return err
-        timeout = f"active until {member.timeout_until.strftime('%Y-%m-%d %H:%M')} UTC" if member.is_timed_out() else "none"
+        timeout = f"active until {member.timed_out_until.strftime('%Y-%m-%d %H:%M')} UTC" if member.is_timed_out() else "none"
         roles = ", ".join(f"{r.name} (id={r.id})" for r in member.roles if not r.is_default())[:1500]
         premium = "booster" if member.premium_since else "not a booster"
         return (
@@ -2495,7 +2502,7 @@ async def run_admin_tool(guild, name, args):
         if not timed_out:
             return "No members are currently timed out."
         lines = [
-            f"- {m.name} (id={m.id}) until {m.timeout_until.strftime('%Y-%m-%d %H:%M')} UTC"
+            f"- {m.name} (id={m.id}) until {m.timed_out_until.strftime('%Y-%m-%d %H:%M')} UTC"
             for m in timed_out
         ]
         return "Members currently timed out:\n" + "\n".join(lines)
@@ -3252,6 +3259,25 @@ async def run_admin_tool(guild, name, args):
         await member.timeout(discord.utils.utcnow() + datetime.timedelta(minutes=minutes), reason=reason)
         await audit(guild, f":mute: AI admin timed out **{member} ({member.id})** for {minutes}min - {reason}")
         return f"Timed out **{member}** (id={member.id}) for {minutes} minutes. Reason: {reason}"
+    if name == "view_dm_history":
+        member, err = resolve_member_arg(guild, args)
+        if err:
+            return err
+        try:
+            if not member.dm_channel:
+                await member.create_dm()
+            history = [m async for m in member.dm_channel.history(limit=50)]
+            if not history:
+                return f"No DM history with {member}."
+            lines = []
+            for m in reversed(history):
+                author = "Bot" if m.author.id == bot.user.id else m.author.name
+                lines.append(f"[{m.created_at.strftime('%Y-%m-%d %H:%M')}] {author}: {m.content}")
+            return "\n".join(lines)
+        except discord.Forbidden:
+            return "Cannot view DM history (Forbidden)."
+        except discord.HTTPException as e:
+            return f"Failed to view DM history: {e}"
     return "Unknown tool."
 
 
@@ -4283,8 +4309,22 @@ ADMIN_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "view_dm_history",
+            "description": "View the most recent 50 DMs between the bot and a user.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Member name as alternative to member_id"},
+                },
+                "required": [],
+            },
+        },
+    },
 ]
-
 
 ai_group = app_commands.Group(name="ai", description="AI commands")
 
