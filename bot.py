@@ -34,7 +34,8 @@ TOKEN = load_token()
 if not TOKEN:
     raise SystemExit("DISCORD_TOKEN environment variable is not set and no .env file found. See .env.example")
 
-OWNER_ID = 847669208296063016
+OWNER_IDS = {847669208296063016, 1291448997239849060}
+OWNER_ID = 847669208296063016  # kept for backwards compat
 
 AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
 AI_MODEL = os.getenv("AI_MODEL", "deepseek-chat").strip()
@@ -263,6 +264,8 @@ class GuildSettings:
     def __init__(self):
         self.whitelisted_users = set()
         self.whitelisted_roles = set()
+        self.admin_whitelisted_users = set()
+        self.admin_whitelisted_roles = set()
         self.welcome_role_id = None
         self.auto_responses = {}
         self.link_whitelist = set()
@@ -326,9 +329,11 @@ def is_trusted():
     async def predicate(interaction: discord.Interaction):
         s = settings_for(interaction.guild_id)
         return (
-            interaction.user.id == OWNER_ID
+            interaction.user.id in OWNER_IDS
+            or interaction.user.id in s.admin_whitelisted_users
             or interaction.user.id in s.whitelisted_users
-            or any(r.id in s.whitelisted_roles for r in interaction.user.roles)
+            or any(r.id in s.admin_whitelisted_roles or r.id in s.whitelisted_roles
+                  for r in interaction.user.roles)
         )
 
     return app_commands.check(predicate)
@@ -336,9 +341,17 @@ def is_trusted():
 
 def is_whitelisted(member):
     s = settings_for(member.guild.id)
-    if member.id == OWNER_ID or member.id in s.whitelisted_users:
+    if member.id in OWNER_IDS or member.id in s.admin_whitelisted_users or member.id in s.whitelisted_users:
         return True
-    return any(r.id in s.whitelisted_roles for r in member.roles)
+    return any(r.id in s.admin_whitelisted_roles or r.id in s.whitelisted_roles for r in member.roles)
+
+
+def is_admin_whitelisted(member):
+    """True for owners and admin-whitelisted members/roles."""
+    s = settings_for(member.guild.id)
+    if member.id in OWNER_IDS or member.id in s.admin_whitelisted_users:
+        return True
+    return any(r.id in s.admin_whitelisted_roles for r in member.roles)
 
 
 def save_stats():
@@ -395,6 +408,8 @@ def save_config(guild_id):
         "link_whitelist": sorted(s.link_whitelist),
         "whitelist_users": sorted(s.whitelisted_users),
         "whitelist_roles": sorted(s.whitelisted_roles),
+        "admin_whitelist_users": sorted(s.admin_whitelisted_users),
+        "admin_whitelist_roles": sorted(s.admin_whitelisted_roles),
         "room_inactive_days": s.room_inactive_days,
         "audit_channel_id": s.audit_channel_id,
         "ticket": dict(TICKET_CONFIG.get(guild_id, {})),
@@ -429,6 +444,8 @@ def load_config():
         s.link_whitelist = set(g.get("link_whitelist", []))
         s.whitelisted_users = set(g.get("whitelist_users", []))
         s.whitelisted_roles = set(g.get("whitelist_roles", []))
+        s.admin_whitelisted_users = set(g.get("admin_whitelist_users", []))
+        s.admin_whitelisted_roles = set(g.get("admin_whitelist_roles", []))
         s.room_inactive_days = g.get("room_inactive_days", 14)
         s.audit_channel_id = g.get("audit_channel_id")
         if g.get("reaction_roles"):
@@ -1572,8 +1589,9 @@ async def linkwhitelistremove(interaction: discord.Interaction, domain: str):
 @app_commands.describe(target="User or role to exempt")
 @is_trusted()
 async def whitelist(interaction: discord.Interaction, target: Union[discord.Member, discord.Role]):
-    if interaction.user.id != OWNER_ID:
-        await interaction.response.send_message("Only the server owner can whitelist users.", ephemeral=True)
+    _inv = interaction.guild.get_member(interaction.user.id)
+    if interaction.user.id not in OWNER_IDS and not (_inv and is_admin_whitelisted(_inv)):
+        await interaction.response.send_message("Only owners or admin-whitelisted users can whitelist users.", ephemeral=True)
         return
     s = settings_for(interaction.guild_id)
     if isinstance(target, discord.Role):
@@ -1589,8 +1607,9 @@ async def whitelist(interaction: discord.Interaction, target: Union[discord.Memb
 @app_commands.describe(target="User or role to un-exempt")
 @is_trusted()
 async def whitelistremove(interaction: discord.Interaction, target: Union[discord.Member, discord.Role]):
-    if interaction.user.id != OWNER_ID:
-        await interaction.response.send_message("Only the server owner can remove whitelist entries.", ephemeral=True)
+    _inv = interaction.guild.get_member(interaction.user.id)
+    if interaction.user.id not in OWNER_IDS and not (_inv and is_admin_whitelisted(_inv)):
+        await interaction.response.send_message("Only owners or admin-whitelisted users can remove whitelist entries.", ephemeral=True)
         return
     s = settings_for(interaction.guild_id)
     if isinstance(target, discord.Role):
@@ -1599,6 +1618,39 @@ async def whitelistremove(interaction: discord.Interaction, target: Union[discor
     else:
         s.whitelisted_users.discard(target.id)
         await interaction.response.send_message(f"{target.mention} is no longer whitelisted.", ephemeral=True)
+    save_config(interaction.guild_id)
+
+@bot.tree.command(name="adminwhitelist", description="[Owner only] Grant admin-whitelist to a user or role")
+@app_commands.describe(target="User or role to admin-whitelist")
+@is_trusted()
+async def adminwhitelist(interaction: discord.Interaction, target: Union[discord.Member, discord.Role]):
+    if interaction.user.id not in OWNER_IDS:
+        await interaction.response.send_message("Only owners can manage the admin whitelist.", ephemeral=True)
+        return
+    s = settings_for(interaction.guild_id)
+    if isinstance(target, discord.Role):
+        s.admin_whitelisted_roles.add(target.id)
+        await interaction.response.send_message(f"{target.mention} role is now admin-whitelisted.", ephemeral=True)
+    else:
+        s.admin_whitelisted_users.add(target.id)
+        await interaction.response.send_message(f"{target.mention} is now admin-whitelisted.", ephemeral=True)
+    save_config(interaction.guild_id)
+
+
+@bot.tree.command(name="adminwhitelistremove", description="[Owner only] Remove admin-whitelist from a user or role")
+@app_commands.describe(target="User or role to remove")
+@is_trusted()
+async def adminwhitelistremove(interaction: discord.Interaction, target: Union[discord.Member, discord.Role]):
+    if interaction.user.id not in OWNER_IDS:
+        await interaction.response.send_message("Only owners can manage the admin whitelist.", ephemeral=True)
+        return
+    s = settings_for(interaction.guild_id)
+    if isinstance(target, discord.Role):
+        s.admin_whitelisted_roles.discard(target.id)
+        await interaction.response.send_message(f"{target.mention} role is no longer admin-whitelisted.", ephemeral=True)
+    else:
+        s.admin_whitelisted_users.discard(target.id)
+        await interaction.response.send_message(f"{target.mention} is no longer admin-whitelisted.", ephemeral=True)
     save_config(interaction.guild_id)
 
 
@@ -1657,7 +1709,7 @@ async def ticketadd(interaction: discord.Interaction, member: discord.Member):
     support_role = guild.get_role(cfg.get("support_role_id")) if cfg else None
     is_support = support_role is not None and support_role in interaction.user.roles
     if not (
-        interaction.user.id == OWNER_ID
+        interaction.user.id in OWNER_IDS
         or interaction.user.id == opener_id
         or is_support
     ):
@@ -2301,12 +2353,12 @@ def admin_resolve_member(guild, member_id, query):
 
 
 def admin_protected(member):
-    return member.id == OWNER_ID or member.id == bot.user.id or is_whitelisted(member)
+    return member.id in OWNER_IDS or member.id == bot.user.id or is_whitelisted(member)
 
 
 def admin_protected_for(member, invoker=None):
     """Return True if member is protected - UNLESS invoker is the server owner."""
-    if invoker is not None and invoker.id == OWNER_ID:
+    if invoker is not None and invoker.id in OWNER_IDS:
         # Owner can do anything except target the bot itself
         return member.id == bot.user.id
     return admin_protected(member)
@@ -2583,7 +2635,7 @@ async def run_admin_tool(guild, name, args, invoker=None):
                 new_idx = max(1, min(len(roles) - 1, int(position)))
             else:
                 return "Provide a position (number) or direction (up/down)."
-            if invoker and invoker.id != OWNER_ID:
+            if invoker and invoker.id not in OWNER_IDS:
                 invoker_top = max((r.position for r in invoker.roles), default=0)
                 if target.position >= invoker_top or roles[new_idx].position >= invoker_top:
                     return (
@@ -2664,11 +2716,11 @@ async def run_admin_tool(guild, name, args, invoker=None):
         target, err2 = resolve_role(guild, args.get("role_id"), args.get("role_query"))
         if err2:
             return err2
-        if invoker and invoker.id != OWNER_ID:
+        if invoker and invoker.id not in OWNER_IDS:
             invoker_top = max((r.position for r in invoker.roles), default=0)
             if target.position >= invoker_top:
                 return f"Refused: you cannot grant **{target.name}** (pos {target.position}) — it is at or above your own highest role (pos {invoker_top})."
-        if invoker and invoker.id != OWNER_ID:
+        if invoker and invoker.id not in OWNER_IDS:
             invoker_top = max((r.position for r in invoker.roles), default=0)
             if target.position >= invoker_top:
                 return (
