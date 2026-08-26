@@ -1953,7 +1953,8 @@ ADMIN_SYSTEM = (
     "use '-' prefix to revoke a permission, bare or '+' to grant. "
     "set_channel_permissions sets per-channel overrides for a role or member; get_role_permissions shows a role's current perms."
     "Use search_members to find a member's exact user id and list_roles/list_channels for ids before acting on them. "
-    "The owner, the bot itself, admins and whitelisted staff are protected - tools refuse to moderate them, respect that. "
+    "Whitelisted staff and admins are protected and tools will refuse to moderate them — respect that unless the invoker is a server owner. "
+    "If the user invoking you is a server owner (ids: 847669208296063016 or 1291448997239849060), they can moderate ANYONE including whitelisted staff, admins and role-holders — always attempt the action and let the tool decide. "
     "Never use @everyone or @here. Keep replies short and state clearly what you did."
 )
 
@@ -3352,7 +3353,13 @@ async def ai_admin_generate(prompt, interaction):
         return "AI is not set up yet. The owner needs to add an `AI_API_KEY` to the bot environment."
     invoker = interaction.guild.get_member(interaction.user.id)
     memory = AI_ADMIN_MEMORY[interaction.user.id]
-    messages = [{"role": "system", "content": ADMIN_SYSTEM}]
+    is_owner = interaction.user.id in OWNER_IDS
+    invoker_context = (
+        f"INVOKER CONTEXT: The user sending this request is {interaction.user} (id={interaction.user.id}). "
+        + ("They are a SERVER OWNER and can bypass all member protections — always attempt their requested action and let the tool decide." if is_owner
+           else "They are a whitelisted staff member — tools will block moderating other protected members.")
+    )
+    messages = [{"role": "system", "content": ADMIN_SYSTEM + " " + invoker_context}]
     for role, text in memory:
         messages.append({"role": role, "content": text})
     messages.append({"role": "user", "content": prompt})
@@ -3388,7 +3395,13 @@ async def ai_juiced_generate(prompt, interaction):
         return "AI is not set up yet. The owner needs to add an `AI_API_KEY` to the bot environment."
     invoker = interaction.guild.get_member(interaction.user.id)
     memory = AI_JUICED_MEMORY[interaction.user.id]
-    messages = [{"role": "system", "content": JUICED_SYSTEM}]
+    is_owner = interaction.user.id in OWNER_IDS
+    invoker_context = (
+        f"INVOKER CONTEXT: The user sending this request is {interaction.user} (id={interaction.user.id}). "
+        + ("They are a SERVER OWNER and can bypass all member protections — always attempt their requested action and let the tool decide." if is_owner
+           else "They are a whitelisted staff member — tools will block moderating other protected members.")
+    )
+    messages = [{"role": "system", "content": JUICED_SYSTEM + "\n" + invoker_context}]
     for role, text in memory:
         messages.append({"role": role, "content": text})
     messages.append({"role": "user", "content": prompt})
