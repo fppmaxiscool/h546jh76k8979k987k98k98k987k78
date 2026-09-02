@@ -1607,7 +1607,7 @@ async def whitelistremove(interaction: discord.Interaction, target: Union[discor
 @app_commands.describe(target="User or role to admin-whitelist")
 @is_trusted()
 async def adminwhitelist(interaction: discord.Interaction, target: Union[discord.Member, discord.Role]):
-    if interaction.user.id not in OWNER_IDS:
+    if interaction.user.id not in OWNER_IDS and interaction.user.id not in COOWNER_IDS:
         await interaction.response.send_message("Only owners can manage the admin whitelist.", ephemeral=True)
         return
     s = settings_for(interaction.guild_id)
@@ -1624,7 +1624,7 @@ async def adminwhitelist(interaction: discord.Interaction, target: Union[discord
 @app_commands.describe(target="User or role to remove")
 @is_trusted()
 async def adminwhitelistremove(interaction: discord.Interaction, target: Union[discord.Member, discord.Role]):
-    if interaction.user.id not in OWNER_IDS:
+    if interaction.user.id not in OWNER_IDS and interaction.user.id not in COOWNER_IDS:
         await interaction.response.send_message("Only owners can manage the admin whitelist.", ephemeral=True)
         return
     s = settings_for(interaction.guild_id)
