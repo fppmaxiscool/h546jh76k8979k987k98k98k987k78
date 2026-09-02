@@ -1924,9 +1924,8 @@ async def ai_generate(prompt, user_id):
 
 
 ADMIN_SYSTEM = (
-    "You are a Discord moderation assistant that can manage any server the bot is in. "
-    "Your tools always operate on the TARGET server specified in the INVOKER CONTEXT below — you are NOT limited to one server. "
-    "You have tools to: search members, list channels/roles/stats, "
+    "You are the moderation assistant for this Discord server, working for the server owner's team. "
+    "You have tools to view server data and fully manage it: search members, list channels/roles/stats, "
     "moderate members (ban, kick, timeout, unban, set nickname), manage roles (create, rename, delete, "
     "grant/remove to members, set role permissions list_roles create_role rename_role delete_role set_role_permissions grant_role remove_role), "
     "manage channels (create, rename, delete, set slowmode) and send or purge messages in channels. "
@@ -2475,13 +2474,6 @@ async def run_admin_tool(guild, name, args, invoker=None):
         ]
         out = f"Recent messages in #{channel.name}:\n" + "\n".join(lines)
         return out[:40000] + (f"\n... (result truncated at 40000 chars)" if len(out) > 40000 else "")
-    if name == "list_guilds":
-        if invoker is None or invoker.id not in OWNER_IDS:
-            return "Refused: only server owners can list all guilds."
-        lines = []
-        for g in sorted(bot.guilds, key=lambda x: x.name.lower()):
-            lines.append(f"- **{g.name}** (id={g.id}) — {g.member_count} members")
-        return f"Bot is in {len(bot.guilds)} servers:\n" + "\n".join(lines)
     if name == "server_stats":
         bots = sum(1 for m in guild.members if m.bot)
         return (
@@ -3337,16 +3329,14 @@ async def run_admin_tool(guild, name, args, invoker=None):
     return "Unknown tool."
 
 
-async def ai_admin_generate(prompt, interaction, target_guild=None):
+async def ai_admin_generate(prompt, interaction):
     if not AI_ENABLED:
         return "AI is not set up yet. The owner needs to add an `AI_API_KEY` to the bot environment."
-    guild = target_guild or interaction.guild
     invoker = interaction.guild.get_member(interaction.user.id)
     memory = AI_ADMIN_MEMORY[interaction.user.id]
     is_owner = interaction.user.id in OWNER_IDS
-    guild_note = f" [Targeting SERVER: {guild.name} (id={guild.id})]" if target_guild else ""
     invoker_context = (
-        f"INVOKER CONTEXT: The user sending this request is {interaction.user} (id={interaction.user.id}).{guild_note} "
+        f"INVOKER CONTEXT: The user sending this request is {interaction.user} (id={interaction.user.id}). "
         + ("They are a SERVER OWNER and can bypass all member protections — always attempt their requested action and let the tool decide." if is_owner
            else "They are a whitelisted staff member — tools will block moderating other protected members.")
     )
@@ -3367,7 +3357,7 @@ async def ai_admin_generate(prompt, interaction, target_guild=None):
                 except json.JSONDecodeError:
                     targs = {}
                 try:
-                    result = await run_admin_tool(guild, fname, targs, invoker=invoker)
+                    result = await run_admin_tool(interaction.guild, fname, targs, invoker=invoker)
                 except discord.HTTPException as e:
                     result = f"Discord error: {e}"
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
@@ -3381,16 +3371,14 @@ async def ai_admin_generate(prompt, interaction, target_guild=None):
         return fit(reply)
 
 
-async def ai_juiced_generate(prompt, interaction, target_guild=None):
+async def ai_juiced_generate(prompt, interaction):
     if not AI_ENABLED:
         return "AI is not set up yet. The owner needs to add an `AI_API_KEY` to the bot environment."
-    guild = target_guild or interaction.guild
     invoker = interaction.guild.get_member(interaction.user.id)
     memory = AI_JUICED_MEMORY[interaction.user.id]
     is_owner = interaction.user.id in OWNER_IDS
-    guild_note = f" [Targeting SERVER: {guild.name} (id={guild.id})]" if target_guild else ""
     invoker_context = (
-        f"INVOKER CONTEXT: The user sending this request is {interaction.user} (id={interaction.user.id}).{guild_note} "
+        f"INVOKER CONTEXT: The user sending this request is {interaction.user} (id={interaction.user.id}). "
         + ("They are a SERVER OWNER and can bypass all member protections — always attempt their requested action and let the tool decide." if is_owner
            else "They are a whitelisted staff member — tools will block moderating other protected members.")
     )
@@ -3411,7 +3399,7 @@ async def ai_juiced_generate(prompt, interaction, target_guild=None):
                 except json.JSONDecodeError:
                     targs = {}
                 try:
-                    result = await run_admin_tool(guild, fname, targs, invoker=invoker)
+                    result = await run_admin_tool(interaction.guild, fname, targs, invoker=invoker)
                 except discord.HTTPException as e:
                     result = f"Discord error: {e}"
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
@@ -3443,14 +3431,6 @@ ADMIN_TOOLS = [
         "function": {
             "name": "list_channels",
             "description": "List all channels in the server with their ids.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_guilds",
-            "description": "List all Discord servers the bot is currently in, with their IDs and member counts. Use this when the owner wants to know what servers the bot is in or needs a server ID to target another server.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -4453,45 +4433,21 @@ async def _ai_post_background(interaction, coro):
 
 
 @ai_group.command(name="admin", description="AI admin: view members and moderate (ban/kick/timeout)")
-@app_commands.describe(message="What to do", server_id="[Owner only] Target a different server by ID")
 @is_trusted()
-async def ai_admin_cmd(interaction: discord.Interaction, message: str, server_id: str = None):
-    target_guild = None
-    if server_id:
-        if interaction.user.id not in OWNER_IDS:
-            await interaction.response.send_message("Only owners can target other servers.", ephemeral=True)
-            return
-        try:
-            target_guild = bot.get_guild(int(server_id))
-        except ValueError:
-            target_guild = None
-        if not target_guild:
-            await interaction.response.send_message(f"Bot is not in server `{server_id}` or ID is wrong.", ephemeral=True)
-            return
-    guild_note = f" (targeting **{target_guild.name}**)" if target_guild else ""
-    await interaction.response.send_message(f"working on it — I'll post the result in this channel when done.{guild_note}")
-    asyncio.create_task(_ai_post_background(interaction, ai_admin_generate(message, interaction, target_guild=target_guild)))
+async def ai_admin_cmd(interaction: discord.Interaction, message: str):
+    await interaction.response.send_message(
+        "working on it — I'll post the result in this channel when done."
+    )
+    asyncio.create_task(_ai_post_background(interaction, ai_admin_generate(message, interaction)))
 
 
 @ai_group.command(name="juiced", description="AI admin with the [CATT]vk persona")
-@app_commands.describe(message="What to do", server_id="[Owner only] Target a different server by ID")
 @is_trusted()
-async def ai_juiced_cmd(interaction: discord.Interaction, message: str, server_id: str = None):
-    target_guild = None
-    if server_id:
-        if interaction.user.id not in OWNER_IDS:
-            await interaction.response.send_message("Only owners can target other servers.", ephemeral=True)
-            return
-        try:
-            target_guild = bot.get_guild(int(server_id))
-        except ValueError:
-            target_guild = None
-        if not target_guild:
-            await interaction.response.send_message(f"Bot is not in server `{server_id}` or ID is wrong.", ephemeral=True)
-            return
-    guild_note = f" (targeting **{target_guild.name}**)" if target_guild else ""
-    await interaction.response.send_message(f"working on it — I'll post the result in this channel when done.{guild_note}")
-    asyncio.create_task(_ai_post_background(interaction, ai_juiced_generate(message, interaction, target_guild=target_guild)))
+async def ai_juiced_cmd(interaction: discord.Interaction, message: str):
+    await interaction.response.send_message(
+        "working on it — I'll post the result in this channel when done."
+    )
+    asyncio.create_task(_ai_post_background(interaction, ai_juiced_generate(message, interaction)))
 
 
 
