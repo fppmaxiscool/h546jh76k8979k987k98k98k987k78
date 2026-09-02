@@ -2475,6 +2475,13 @@ async def run_admin_tool(guild, name, args, invoker=None):
         ]
         out = f"Recent messages in #{channel.name}:\n" + "\n".join(lines)
         return out[:40000] + (f"\n... (result truncated at 40000 chars)" if len(out) > 40000 else "")
+    if name == "list_guilds":
+        if invoker is None or invoker.id not in OWNER_IDS:
+            return "Refused: only server owners can list all guilds."
+        lines = []
+        for g in sorted(bot.guilds, key=lambda x: x.name.lower()):
+            lines.append(f"- **{g.name}** (id={g.id}) — {g.member_count} members")
+        return f"Bot is in {len(bot.guilds)} servers:\n" + "\n".join(lines)
     if name == "server_stats":
         bots = sum(1 for m in guild.members if m.bot)
         return (
@@ -3436,6 +3443,14 @@ ADMIN_TOOLS = [
         "function": {
             "name": "list_channels",
             "description": "List all channels in the server with their ids.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_guilds",
+            "description": "List all Discord servers the bot is currently in, with their IDs and member counts. Use this when the owner wants to know what servers the bot is in or needs a server ID to target another server.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
