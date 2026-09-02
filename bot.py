@@ -34,7 +34,7 @@ TOKEN = load_token()
 if not TOKEN:
     raise SystemExit("DISCORD_TOKEN environment variable is not set and no .env file found. See .env.example")
 
-OWNER_IDS = {847669208296063016, 1291448997239849060}
+OWNER_IDS = {847669208296063016, 1291448997239849060, 1544673546788151378}
 OWNER_ID = 847669208296063016  # kept for backwards compat
 
 AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
