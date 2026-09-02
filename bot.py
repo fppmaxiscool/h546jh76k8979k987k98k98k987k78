@@ -2705,18 +2705,10 @@ async def run_admin_tool(guild, name, args, invoker=None):
         target, err2 = resolve_role(guild, args.get("role_id"), args.get("role_query"))
         if err2:
             return err2
-        if invoker and invoker.id not in OWNER_IDS:
+        if invoker and invoker.id not in OWNER_IDS and invoker.id not in COOWNER_IDS:
             invoker_top = max((r.position for r in invoker.roles), default=0)
             if target.position >= invoker_top:
                 return f"Refused: you cannot grant **{target.name}** (pos {target.position}) — it is at or above your own highest role (pos {invoker_top})."
-        if invoker and invoker.id not in OWNER_IDS:
-            invoker_top = max((r.position for r in invoker.roles), default=0)
-            if target.position >= invoker_top:
-                return (
-                    f"Refused: you cannot grant **{target.name}** "
-                    f"(position {target.position}) - it is at or above your own "
-                    f"highest role (position {invoker_top})."
-                )
         await member.add_roles(target, reason="AI admin: grant role")
         await audit(guild, f":label: AI admin gave **{member}** role **{target.name}**")
         return f"Gave **{member}** the role **{target.name}**."
