@@ -35,6 +35,7 @@ if not TOKEN:
     raise SystemExit("DISCORD_TOKEN environment variable is not set and no .env file found. See .env.example")
 
 OWNER_IDS = {847669208296063016, 1291448997239849060, 1544673546788151378}
+COOWNER_IDS = {1105816661874974800}
 OWNER_ID = 847669208296063016  # kept for backwards compat
 
 AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
@@ -330,6 +331,7 @@ def is_trusted():
         s = settings_for(interaction.guild_id)
         return (
             interaction.user.id in OWNER_IDS
+            or interaction.user.id in COOWNER_IDS
             or interaction.user.id in s.admin_whitelisted_users
             or interaction.user.id in s.whitelisted_users
             or any(r.id in s.admin_whitelisted_roles or r.id in s.whitelisted_roles
@@ -341,7 +343,7 @@ def is_trusted():
 
 def is_whitelisted(member):
     s = settings_for(member.guild.id)
-    if member.id in OWNER_IDS or member.id in s.admin_whitelisted_users or member.id in s.whitelisted_users:
+    if member.id in OWNER_IDS or member.id in COOWNER_IDS or member.id in s.admin_whitelisted_users or member.id in s.whitelisted_users:
         return True
     return any(r.id in s.admin_whitelisted_roles or r.id in s.whitelisted_roles for r in member.roles)
 
@@ -349,7 +351,7 @@ def is_whitelisted(member):
 def is_admin_whitelisted(member):
     """True for owners and admin-whitelisted members/roles."""
     s = settings_for(member.guild.id)
-    if member.id in OWNER_IDS or member.id in s.admin_whitelisted_users:
+    if member.id in OWNER_IDS or member.id in COOWNER_IDS or member.id in s.admin_whitelisted_users:
         return True
     return any(r.id in s.admin_whitelisted_roles for r in member.roles)
 
@@ -2338,14 +2340,16 @@ def admin_resolve_member(guild, member_id, query):
 
 
 def admin_protected(member):
-    return member.id in OWNER_IDS or member.id == bot.user.id or is_whitelisted(member)
+    return member.id in OWNER_IDS or member.id in COOWNER_IDS or member.id == bot.user.id or is_whitelisted(member)
 
 
 def admin_protected_for(member, invoker=None):
     """Return True if member is protected - UNLESS invoker is the server owner."""
-    if invoker is not None and invoker.id in OWNER_IDS:
-        # Owner can do anything except target the bot itself
-        return member.id == bot.user.id
+    if invoker is not None:
+        if invoker.id in OWNER_IDS:
+            return member.id == bot.user.id
+        if invoker.id in COOWNER_IDS:
+            return member.id == bot.user.id or member.id in OWNER_IDS
     return admin_protected(member)
 
 
@@ -2620,7 +2624,7 @@ async def run_admin_tool(guild, name, args, invoker=None):
                 new_idx = max(1, min(len(roles) - 1, int(position)))
             else:
                 return "Provide a position (number) or direction (up/down)."
-            if invoker and invoker.id not in OWNER_IDS:
+            if invoker and invoker.id not in OWNER_IDS and invoker.id not in COOWNER_IDS:
                 invoker_top = max((r.position for r in invoker.roles), default=0)
                 if target.position >= invoker_top or roles[new_idx].position >= invoker_top:
                     return (
@@ -3338,10 +3342,16 @@ async def ai_admin_generate(prompt, interaction):
     invoker = interaction.guild.get_member(interaction.user.id)
     memory = AI_ADMIN_MEMORY[interaction.user.id]
     is_owner = interaction.user.id in OWNER_IDS
+    is_coowner = interaction.user.id in COOWNER_IDS
+    if is_owner:
+        status = "a SERVER OWNER and can bypass all member protections."
+    elif is_coowner:
+        status = "a CO-OWNER and can bypass most protections, but CANNOT moderate SERVER OWNERS."
+    else:
+        status = "a whitelisted staff member — tools will block moderating other protected members."
     invoker_context = (
-        f"INVOKER CONTEXT: The user sending this request is {interaction.user} (id={interaction.user.id}). "
-        + ("They are a SERVER OWNER and can bypass all member protections — always attempt their requested action and let the tool decide." if is_owner
-           else "They are a whitelisted staff member — tools will block moderating other protected members.")
+        f"INVOKER CONTEXT: The user sending this request is {interaction.user} (id={interaction.user.id}). They are {status} "
+        "IMPORTANT: When asked who you or they are, co-owners should be referred to as owners."
     )
     messages = [{"role": "system", "content": ADMIN_SYSTEM + " " + invoker_context}]
     for role, text in memory:
@@ -3380,10 +3390,16 @@ async def ai_juiced_generate(prompt, interaction):
     invoker = interaction.guild.get_member(interaction.user.id)
     memory = AI_JUICED_MEMORY[interaction.user.id]
     is_owner = interaction.user.id in OWNER_IDS
+    is_coowner = interaction.user.id in COOWNER_IDS
+    if is_owner:
+        status = "a SERVER OWNER and can bypass all member protections."
+    elif is_coowner:
+        status = "a CO-OWNER and can bypass most protections, but CANNOT moderate SERVER OWNERS."
+    else:
+        status = "a whitelisted staff member — tools will block moderating other protected members."
     invoker_context = (
-        f"INVOKER CONTEXT: The user sending this request is {interaction.user} (id={interaction.user.id}). "
-        + ("They are a SERVER OWNER and can bypass all member protections — always attempt their requested action and let the tool decide." if is_owner
-           else "They are a whitelisted staff member — tools will block moderating other protected members.")
+        f"INVOKER CONTEXT: The user sending this request is {interaction.user} (id={interaction.user.id}). They are {status} "
+        "IMPORTANT: When asked who you or they are, co-owners should be referred to as owners."
     )
     messages = [{"role": "system", "content": JUICED_SYSTEM + "\n" + invoker_context}]
     for role, text in memory:
