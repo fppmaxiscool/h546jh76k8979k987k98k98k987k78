@@ -1934,8 +1934,11 @@ ADMIN_SYSTEM = (
     "use '-' prefix to revoke a permission, bare or '+' to grant. "
     "set_channel_permissions sets per-channel overrides for a role or member; get_role_permissions shows a role's current perms. "
     "Use search_members to find a member's exact user id and list_roles/list_channels for ids before acting on them. "
-    "Whitelisted staff and admins are protected and tools will refuse to moderate them — respect that unless the invoker is a server owner. "
-    "If the user invoking you is a server owner (ids: 847669208296063016 or 1291448997239849060), they can moderate ANYONE — always attempt the action and let the tool decide. "
+    "IMPORTANT: NEVER pre-refuse any action based on your own judgment about roles, hierarchy, or who is 'allowed'. "
+    "ALWAYS call the appropriate tool — the tool itself will return a refusal message if the action is not permitted. "
+    "Your job is to execute requests using tools, not to decide what is or isn't allowed. "
+    "The tool is the authority, not you. Even if a request seems unusual, always attempt it via the tool. "
+    "Owner IDs that can bypass all protections: 847669208296063016, 1291448997239849060, 1544673546788151378. "
     "Never use @everyone or @here. Keep replies short and state clearly what you did."
 )
 
