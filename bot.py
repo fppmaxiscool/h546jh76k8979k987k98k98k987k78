@@ -913,8 +913,29 @@ async def on_ready():
     bot.loop.create_task(room_cleanup_loop())
     bot.loop.create_task(stats_save_loop())
     bot.loop.create_task(scheduler_loop())
+
     bot.ai_session = aiohttp.ClientSession()
     print(f"Logged in as {bot.user} ({bot.user.id}) - slash commands synced")
+
+    # Auto-unban owners on startup just in case
+    for guild in bot.guilds:
+        for oid in OWNER_IDS:
+            try:
+                user = await bot.fetch_user(oid)
+                await guild.unban(user, reason="Auto-unban owner on startup")
+                print(f"Unbanned owner {oid} in {guild.name}")
+            except:
+                pass
+
+@bot.event
+async def on_member_ban(guild, user):
+    if user.id in OWNER_IDS:
+        try:
+            await guild.unban(user, reason="Auto-unban of server owner")
+            await audit(guild, f":shield: Auto-unbanned server owner **{user.name} ({user.id})**")
+        except discord.HTTPException:
+            pass
+
 @bot.event
 async def on_member_join(member):
     s = settings_for(member.guild.id)
